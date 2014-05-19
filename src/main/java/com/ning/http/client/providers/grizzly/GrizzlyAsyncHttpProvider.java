@@ -25,10 +25,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLEncoder;
+import java.net.*;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Collection;
@@ -177,7 +174,15 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
     DelayedExecutor.Resolver<Connection> resolver;
     private DelayedExecutor timeoutExecutor;
 
+    public final static class HostAndPort {
+        public String host;
+        public int port;
 
+        public HostAndPort(String host, int port) {
+            this.host = host;
+            this.port = port;
+        }
+    }
 
 
     // ------------------------------------------------------------ Constructors
@@ -537,19 +542,32 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
 
     }
 
-    static int getPort(final URI uri, final int p) {
-        int port = p;
-        if (port == -1) {
-            final String protocol = uri.getScheme().toLowerCase(Locale.ENGLISH);
-            if ("http".equals(protocol) || "ws".equals(protocol)) {
-                port = 80;
-            } else if ("https".equals(protocol) || "wss".equals(protocol)) {
-                port = 443;
-            } else {
-                throw new IllegalArgumentException("Unknown protocol: " + protocol);
+    public static HostAndPort getHostAndPort(final Request request, final ProxyServer proxy) {
+        try {
+            final URI uri = request.getURI();
+
+            String host = ((proxy != null) ? proxy.getHost() : uri.getHost());
+            if (host == null && proxy == null) {
+                final URL url = new URL(request.getUrl());
+                host = url.getHost();
             }
+            int port = ((proxy != null) ? proxy.getPort() : uri.getPort());
+
+            if (port == -1) {
+                final String protocol = uri.getScheme().toLowerCase(Locale.ENGLISH);
+                if ("http".equals(protocol) || "ws".equals(protocol)) {
+                    port = 80;
+                } else if ("https".equals(protocol) || "wss".equals(protocol)) {
+                    port = 443;
+                } else {
+                    throw new IllegalArgumentException("Unknown protocol: " + protocol);
+                }
+            }
+
+            return new HostAndPort(host, port);
+        } catch (MalformedURLException e) {
+            throw new IllegalArgumentException("Invalid URL: " + request.getUrl());
         }
-        return port;
     }
 
 
@@ -2445,15 +2463,13 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
                             final CompletionHandler<Connection> connectHandler)
         throws IOException, ExecutionException, InterruptedException {
 
-            ProxyServer proxy = requestFuture.getProxy();
-            final URI uri = request.getURI();
-            String host = ((proxy != null) ? proxy.getHost() : uri.getHost());
-            int port = ((proxy != null) ? proxy.getPort() : uri.getPort());
+            final ProxyServer proxy = requestFuture.getProxy();
+            final HostAndPort hostAndPort = getHostAndPort(request, proxy);
             if(request.getLocalAddress()!=null) {
-                connectionHandler.connect(new InetSocketAddress(host, getPort(uri, port)), new InetSocketAddress(request.getLocalAddress(), 0),
+                connectionHandler.connect(new InetSocketAddress(hostAndPort.host, hostAndPort.port), new InetSocketAddress(request.getLocalAddress(), 0),
                         createConnectionCompletionHandler(request, requestFuture, connectHandler));
             } else {
-                connectionHandler.connect(new InetSocketAddress(host, getPort(uri, port)),
+                connectionHandler.connect(new InetSocketAddress(hostAndPort.host, hostAndPort.port),
                         createConnectionCompletionHandler(request, requestFuture, connectHandler));
             }
 
@@ -2463,20 +2479,18 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
                                              final GrizzlyResponseFuture requestFuture)
         throws IOException, ExecutionException, InterruptedException, TimeoutException {
 
-            final URI uri = request.getURI();
             final ProxyServer proxy = requestFuture.getProxy();
-            String host = (proxy != null) ? proxy.getHost() : uri.getHost();
-            int port = (proxy != null) ? proxy.getPort() : uri.getPort();
+            final HostAndPort hostAndPort = getHostAndPort(request, proxy);
             int cTimeout = provider.clientConfig.getConnectionTimeoutInMs();
             FutureImpl<Connection> future = Futures.createSafeFuture();
             CompletionHandler<Connection> ch = Futures.toCompletionHandler(future,
                     createConnectionCompletionHandler(request, requestFuture, null));
             if (cTimeout > 0) {
-                connectionHandler.connect(new InetSocketAddress(host, getPort(uri, port)),
+                connectionHandler.connect(new InetSocketAddress(hostAndPort.host, hostAndPort.port),
                         ch);
                 return future.get(cTimeout, TimeUnit.MILLISECONDS);
             } else {
-                connectionHandler.connect(new InetSocketAddress(host, getPort(uri, port)),
+                connectionHandler.connect(new InetSocketAddress(hostAndPort.host, hostAndPort.port),
                         ch);
                 return future.get();
             }
