@@ -49,7 +49,7 @@ import com.ning.http.client.providers.netty.response.NettyResponseBodyPart;
 import com.ning.http.client.providers.netty.response.NettyResponseHeaders;
 import com.ning.http.client.providers.netty.response.NettyResponseStatus;
 import com.ning.http.client.providers.netty.spnego.SpnegoEngine;
-import com.ning.http.client.uri.UriComponents;
+import com.ning.http.client.uri.Uri;
 
 import java.io.IOException;
 import java.util.List;
@@ -65,11 +65,17 @@ public final class HttpProtocol extends Protocol {
         return realm != null ? new Realm.RealmBuilder().clone(realm) : new Realm.RealmBuilder();
     }
 
-    private Realm kerberosChallenge(List<String> proxyAuth, Request request, ProxyServer proxyServer,
-            FluentCaseInsensitiveStringsMap headers, Realm realm, NettyResponseFuture<?> future, boolean proxyInd)
+    private Realm kerberosChallenge(Channel channel,//
+            List<String> proxyAuth,//
+            Request request,//
+            ProxyServer proxyServer,//
+            FluentCaseInsensitiveStringsMap headers,//
+            Realm realm,//
+            NettyResponseFuture<?> future,//
+            boolean proxyInd)
             throws NTLMEngineException {
 
-        UriComponents uri = request.getURI();
+        Uri uri = request.getUri();
         String host = request.getVirtualHost() == null ? uri.getHost() : request.getVirtualHost();
         String server = proxyServer == null ? host : proxyServer.getHost();
         try {
@@ -87,7 +93,7 @@ public final class HttpProtocol extends Protocol {
             if (isNTLM(proxyAuth)) {
                 return ntlmChallenge(proxyAuth, request, proxyServer, headers, realm, future, proxyInd);
             }
-            requestSender.abort(future, throwable);
+            requestSender.abort(channel, future, throwable);
             return null;
         }
     }
@@ -109,7 +115,7 @@ public final class HttpProtocol extends Protocol {
         String ntlmHost = useRealm ? realm.getNtlmHost() : proxyServer.getHost();
         String principal = useRealm ? realm.getPrincipal() : proxyServer.getPrincipal();
         String password = useRealm ? realm.getPassword() : proxyServer.getPassword();
-        UriComponents uri = request.getURI();
+        Uri uri = request.getUri();
 
         if (realm != null && !realm.isNtlmMessageType2Received()) {
             String challengeHeader = NTLMEngine.INSTANCE.generateType1Msg(ntlmDomain, ntlmHost);
@@ -145,7 +151,7 @@ public final class HttpProtocol extends Protocol {
 
         return newRealmBuilder(realm)//
                 // .setScheme(realm.getAuthScheme())
-                .setUri(request.getURI())//
+                .setUri(request.getUri())//
                 .setMethodName(request.getMethod()).build();
     }
 
@@ -166,7 +172,7 @@ public final class HttpProtocol extends Protocol {
         if (expectOtherChunks && keepAlive)
             channelManager.drainChannel(channel, future);
         else
-            channelManager.tryToOfferChannelToPool(channel, keepAlive, channelManager.getPoolKey(future));
+            channelManager.tryToOfferChannelToPool(channel, keepAlive, channelManager.getPartitionId(future));
         markAsDone(future, channel);
     }
 
@@ -217,7 +223,7 @@ public final class HttpProtocol extends Protocol {
                     newRealm = ntlmChallenge(wwwAuthHeaders, request, proxyServer, requestHeaders, realm, future, false);
                 } else if (negociate) {
                     // SPNEGO KERBEROS
-                    newRealm = kerberosChallenge(wwwAuthHeaders, request, proxyServer, requestHeaders, realm, future, false);
+                    newRealm = kerberosChallenge(channel, wwwAuthHeaders, request, proxyServer, requestHeaders, realm, future, false);
                     if (newRealm == null)
                         return true;
 
@@ -225,7 +231,7 @@ public final class HttpProtocol extends Protocol {
                     newRealm = new Realm.RealmBuilder()//
                             .clone(realm)//
                             .setScheme(realm.getAuthScheme())//
-                            .setUri(request.getURI())//
+                            .setUri(request.getUri())//
                             .setMethodName(request.getMethod())//
                             .setUsePreemptiveAuth(true)//
                             .parseWWWAuthenticateHeader(wwwAuthHeaders.get(0))//
@@ -235,7 +241,7 @@ public final class HttpProtocol extends Protocol {
                 Realm nr = newRealm;
                 final Request nextRequest = new RequestBuilder(future.getRequest()).setHeaders(requestHeaders).setRealm(nr).build();
 
-                logger.debug("Sending authentication to {}", request.getURI());
+                logger.debug("Sending authentication to {}", request.getUri());
                 Callback callback = new Callback(future) {
                     public void call() throws Exception {
                         channelManager.drainChannel(channel, future);
@@ -270,6 +276,7 @@ public final class HttpProtocol extends Protocol {
     }
 
     private boolean exitAfterHandling407(//
+            Channel channel,//
             NettyResponseFuture<?> future,//
             HttpResponse response,//
             Request request,//
@@ -282,7 +289,7 @@ public final class HttpProtocol extends Protocol {
             List<String> proxyAuthHeaders = response.headers().getAll(HttpHeaders.Names.PROXY_AUTHENTICATE);
 
             if (!proxyAuthHeaders.isEmpty()) {
-                logger.debug("Sending proxy authentication to {}", request.getURI());
+                logger.debug("Sending proxy authentication to {}", request.getUri());
 
                 future.setState(NettyResponseFuture.STATE.NEW);
                 Realm newRealm = null;
@@ -293,13 +300,13 @@ public final class HttpProtocol extends Protocol {
                     newRealm = ntlmProxyChallenge(proxyAuthHeaders, request, proxyServer, requestHeaders, realm, future, true);
                     // SPNEGO KERBEROS
                 } else if (negociate) {
-                    newRealm = kerberosChallenge(proxyAuthHeaders, request, proxyServer, requestHeaders, realm, future, true);
+                    newRealm = kerberosChallenge(channel, proxyAuthHeaders, request, proxyServer, requestHeaders, realm, future, true);
                     if (newRealm == null)
                         return true;
                 } else {
                     newRealm = new Realm.RealmBuilder().clone(realm)//
                             .setScheme(realm.getAuthScheme())//
-                            .setUri(request.getURI())//
+                            .setUri(request.getUri())//
                             .setOmitQuery(true)//
                             .setMethodName(HttpMethod.CONNECT.getName())//
                             .setUsePreemptiveAuth(true)//
@@ -331,16 +338,16 @@ public final class HttpProtocol extends Protocol {
                 future.attachChannel(channel, true);
 
             try {
-                UriComponents requestURI = request.getURI();
-                String scheme = requestURI.getScheme();
-                String host = requestURI.getHost();
-                int port = getDefaultPort(requestURI);
+                Uri requestUri = request.getUri();
+                String scheme = requestUri.getScheme();
+                String host = requestUri.getHost();
+                int port = getDefaultPort(requestUri);
 
                 logger.debug("Connecting to proxy {} for scheme {}", proxyServer, scheme);
                 channelManager.upgradeProtocol(channel.getPipeline(), scheme, host, port);
 
             } catch (Throwable ex) {
-                requestSender.abort(future, ex);
+                requestSender.abort(channel, future, ex);
             }
 
             future.setReuseChannel(true);
@@ -384,6 +391,10 @@ public final class HttpProtocol extends Protocol {
         return false;
     }
 
+    private boolean isConnectionKeepAlive(HttpHeaders headers) {
+        return !HttpHeaders.Values.CLOSE.equalsIgnoreCase(headers.get(HttpHeaders.Names.CONNECTION));
+    }
+    
     private boolean handleHttpResponse(final HttpResponse response,//
             final Channel channel,//
             final NettyResponseFuture<?> future,//
@@ -397,9 +408,9 @@ public final class HttpProtocol extends Protocol {
         // the handler in case of trailing headers
         future.setHttpHeaders(response.headers());
 
-        future.setKeepAlive(!HttpHeaders.Values.CLOSE.equalsIgnoreCase(response.headers().get(HttpHeaders.Names.CONNECTION)));
+        future.setKeepAlive(isConnectionKeepAlive(httpRequest.headers()) && isConnectionKeepAlive(response.headers()));
 
-        NettyResponseStatus status = new NettyResponseStatus(future.getURI(), config, response);
+        NettyResponseStatus status = new NettyResponseStatus(future.getUri(), config, response);
         int statusCode = response.getStatus().getCode();
         Request request = future.getRequest();
         Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
@@ -407,7 +418,7 @@ public final class HttpProtocol extends Protocol {
 
         return exitAfterProcessingFilters(channel, future, handler, status, responseHeaders)
                 || exitAfterHandling401(channel, future, response, request, statusCode, realm, proxyServer) || //
-                exitAfterHandling407(future, response, request, statusCode, realm, proxyServer) || //
+                exitAfterHandling407(channel, future, response, request, statusCode, realm, proxyServer) || //
                 exitAfterHandling100(channel, future, statusCode) || //
                 exitAfterHandlingRedirect(channel, future, response, request, statusCode) || //
                 exitAfterHandlingConnect(channel, future, request, proxyServer, statusCode, httpRequest) || //
@@ -442,18 +453,20 @@ public final class HttpProtocol extends Protocol {
 
         future.touch();
 
-        // The connect timeout occurred.
+        // future is already done because of an exception or a timeout
         if (future.isDone()) {
+            // FIXME isn't the channel already properly closed?
             channelManager.closeChannel(channel);
             return;
         }
 
         AsyncHandler<?> handler = future.getAsyncHandler();
         try {
-            if (e instanceof HttpResponse && handleHttpResponse((HttpResponse) e, channel, future, handler))
-                return;
+            if (e instanceof HttpResponse) {
+                if (handleHttpResponse((HttpResponse) e, channel, future, handler))
+                    return;
 
-            if (e instanceof HttpChunk)
+            } else if (e instanceof HttpChunk)
                 handleChunk((HttpChunk) e, channel, future, handler);
 
         } catch (Exception t) {
@@ -463,8 +476,9 @@ public final class HttpProtocol extends Protocol {
                 return;
             }
 
+            // FIXME Weird: close channel in abort, then close again
             try {
-                requestSender.abort(future, t);
+                requestSender.abort(channel, future, t);
             } catch (Exception abortException) {
                 logger.debug("Abort failed", abortException);
             } finally {
@@ -474,9 +488,9 @@ public final class HttpProtocol extends Protocol {
         }
     }
 
-    public void onError(Channel channel, Throwable e) {
+    public void onError(NettyResponseFuture<?> future, Throwable e) {
     }
 
-    public void onClose(Channel channel) {
+    public void onClose(NettyResponseFuture<?> future) {
     }
 }

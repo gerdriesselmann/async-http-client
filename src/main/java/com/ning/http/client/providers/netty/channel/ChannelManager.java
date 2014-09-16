@@ -31,6 +31,7 @@ import org.jboss.netty.handler.codec.http.HttpClientCodec;
 import org.jboss.netty.handler.codec.http.HttpContentDecompressor;
 import org.jboss.netty.handler.codec.http.websocketx.WebSocket08FrameDecoder;
 import org.jboss.netty.handler.codec.http.websocketx.WebSocket08FrameEncoder;
+import org.jboss.netty.handler.codec.http.websocketx.WebSocketFrameAggregator;
 import org.jboss.netty.handler.ssl.SslHandler;
 import org.jboss.netty.handler.stream.ChunkedWriteHandler;
 import org.jboss.netty.util.Timer;
@@ -38,9 +39,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.ning.http.client.AsyncHttpClientConfig;
+import com.ning.http.client.ConnectionPoolPartitioning;
+import com.ning.http.client.ProxyServer;
 import com.ning.http.client.providers.netty.Callback;
 import com.ning.http.client.providers.netty.NettyAsyncHttpProviderConfig;
 import com.ning.http.client.providers.netty.channel.pool.ChannelPool;
+import com.ning.http.client.providers.netty.channel.pool.ChannelPoolPartitionSelector;
 import com.ning.http.client.providers.netty.channel.pool.DefaultChannelPool;
 import com.ning.http.client.providers.netty.channel.pool.NoopChannelPool;
 import com.ning.http.client.providers.netty.future.NettyResponseFuture;
@@ -49,6 +53,7 @@ import com.ning.http.client.providers.netty.handler.Processor;
 import com.ning.http.client.providers.netty.handler.Protocol;
 import com.ning.http.client.providers.netty.handler.WebSocketProtocol;
 import com.ning.http.client.providers.netty.request.NettyRequestSender;
+import com.ning.http.client.uri.Uri;
 import com.ning.http.util.SslUtils;
 
 import javax.net.ssl.SSLContext;
@@ -75,6 +80,7 @@ public class ChannelManager {
     public static final String INFLATER_HANDLER = "inflater";
     public static final String CHUNKED_WRITER_HANDLER = "chunkedWriter";
     public static final String WS_DECODER_HANDLER = "ws-decoder";
+    public static final String WS_FRAME_AGGREGATOR = "ws-aggregator";
     public static final String WS_ENCODER_HANDLER = "ws-encoder";
 
     private final AsyncHttpClientConfig config;
@@ -193,15 +199,12 @@ public class ChannelManager {
         Protocol wsProtocol = new WebSocketProtocol(this, config, nettyConfig, requestSender);
         wsProcessor = new Processor(config, this, requestSender, wsProtocol);
 
-        final boolean compressionEnabled = config.isCompressionEnabled();
-
         plainBootstrap.setPipelineFactory(new ChannelPipelineFactory() {
 
             public ChannelPipeline getPipeline() throws Exception {
                 ChannelPipeline pipeline = pipeline();
                 pipeline.addLast(HTTP_HANDLER, newHttpClientCodec());
-                if (compressionEnabled)
-                    pipeline.addLast(INFLATER_HANDLER, new HttpContentDecompressor());
+                pipeline.addLast(INFLATER_HANDLER, new HttpContentDecompressor());
                 pipeline.addLast(CHUNKED_WRITER_HANDLER, new ChunkedWriteHandler());
                 pipeline.addLast(HTTP_PROCESSOR, httpProcessor);
                 return pipeline;
@@ -224,8 +227,7 @@ public class ChannelManager {
                 ChannelPipeline pipeline = pipeline();
                 pipeline.addLast(SSL_HANDLER, new SslInitializer(ChannelManager.this));
                 pipeline.addLast(HTTP_HANDLER, newHttpClientCodec());
-                if (compressionEnabled)
-                    pipeline.addLast(INFLATER_HANDLER, new HttpContentDecompressor());
+                pipeline.addLast(INFLATER_HANDLER, new HttpContentDecompressor());
                 pipeline.addLast(CHUNKED_WRITER_HANDLER, new ChunkedWriteHandler());
                 pipeline.addLast(HTTP_PROCESSOR, httpProcessor);
                 return pipeline;
@@ -244,12 +246,12 @@ public class ChannelManager {
         });
     }
 
-    public final void tryToOfferChannelToPool(Channel channel, boolean keepAlive, String poolKey) {
-        if (keepAlive && channel.isReadable()) {
-            LOGGER.debug("Adding key: {} for channel {}", poolKey, channel);
-            channelPool.offer(channel, poolKey);
+    public final void tryToOfferChannelToPool(Channel channel, boolean keepAlive, String partition) {
+        if (channel.isConnected() && keepAlive && channel.isReadable()) {
+            LOGGER.debug("Adding key: {} for channel {}", partition, channel);
+            channelPool.offer(channel, partition);
             if (maxConnectionsPerHostEnabled)
-                channelId2KeyPool.putIfAbsent(channel.getId(), poolKey);
+                channelId2KeyPool.putIfAbsent(channel.getId(), partition);
             Channels.setDiscard(channel);
         } else {
             // not offered
@@ -257,8 +259,9 @@ public class ChannelManager {
         }
     }
 
-    public Channel poll(String uri) {
-        return channelPool.poll(uri);
+    public Channel poll(Uri uri, ProxyServer proxy, ConnectionPoolPartitioning connectionPoolPartitioning) {
+        String partitionId = connectionPoolPartitioning.getPartitionId(uri, proxy);
+        return channelPool.poll(partitionId);
     }
 
     public boolean removeAll(Channel connection) {
@@ -313,19 +316,17 @@ public class ChannelManager {
     }
 
     public void closeChannel(Channel channel) {
-        removeAll(channel);
-        Channels.setDiscard(channel);
 
-        // The channel may have already been removed if a timeout occurred, and this method may be called just after.
-        if (channel != null) {
-            LOGGER.debug("Closing Channel {} ", channel);
-            try {
-                channel.close();
-            } catch (Throwable t) {
-                LOGGER.debug("Error closing a connection", t);
-            }
-            openChannels.remove(channel);
+        // The channel may have already been removed from the future if a timeout occurred, and this method may be called just after.
+        LOGGER.debug("Closing Channel {} ", channel);
+        try {
+            removeAll(channel);
+            Channels.setDiscard(channel);
+            Channels.silentlyCloseChannel(channel);
+        } catch (Throwable t) {
+            LOGGER.debug("Error closing a connection", t);
         }
+        openChannels.remove(channel);
     }
 
     public void abortChannelPreemption(String poolKey) {
@@ -387,12 +388,14 @@ public class ChannelManager {
         else
             pipeline.addFirst(HTTP_HANDLER, newHttpClientCodec());
 
-        if (isWebSocket(scheme))
-            pipeline.replace(HTTP_PROCESSOR, WS_PROCESSOR, wsProcessor);
+        if (isWebSocket(scheme)) {
+            pipeline.addAfter(HTTP_PROCESSOR, WS_PROCESSOR, wsProcessor);
+            pipeline.remove(HTTP_PROCESSOR);
+        }
     }
 
-    public String getPoolKey(NettyResponseFuture<?> future) {
-        return future.getConnectionPoolKeyStrategy().getKey(future.getURI(), future.getProxyServer());
+    public String getPartitionId(NettyResponseFuture<?> future) {
+        return future.getConnectionPoolPartitioning().getPartitionId(future.getUri(), future.getProxyServer());
     }
 
     public void verifyChannelPipeline(ChannelPipeline pipeline, String scheme) throws IOException, GeneralSecurityException {
@@ -413,8 +416,10 @@ public class ChannelManager {
     }
 
     public void upgradePipelineForWebSockets(ChannelPipeline pipeline) {
-        pipeline.replace(HTTP_HANDLER, WS_ENCODER_HANDLER, new WebSocket08FrameEncoder(true));
-        pipeline.addBefore(WS_PROCESSOR, WS_DECODER_HANDLER, new WebSocket08FrameDecoder(false, false, 10 * 1024));
+        pipeline.addAfter(HTTP_HANDLER, WS_ENCODER_HANDLER, new WebSocket08FrameEncoder(true));
+        pipeline.remove(HTTP_HANDLER);
+        pipeline.addBefore(WS_PROCESSOR, WS_DECODER_HANDLER, new WebSocket08FrameDecoder(false, false, nettyConfig.getWebSocketMaxFrameSize()));
+        pipeline.addAfter(WS_DECODER_HANDLER, WS_FRAME_AGGREGATOR, new WebSocketFrameAggregator(nettyConfig.getWebSocketMaxBufferSize()));
     }
 
     public final Callback newDrainCallback(final NettyResponseFuture<?> future, final Channel channel, final boolean keepAlive,
@@ -429,6 +434,14 @@ public class ChannelManager {
     }
 
     public void drainChannel(final Channel channel, final NettyResponseFuture<?> future) {
-        Channels.setAttribute(channel, newDrainCallback(future, channel, future.isKeepAlive(), getPoolKey(future)));
+        Channels.setAttribute(channel, newDrainCallback(future, channel, future.isKeepAlive(), getPartitionId(future)));
+    }
+
+    public void flushPartition(String partitionId) {
+        channelPool.flushPartition(partitionId);
+    } 
+
+    public void flushPartitions(ChannelPoolPartitionSelector selector) {
+        channelPool.flushPartitions(selector);
     }
 }

@@ -51,7 +51,7 @@ import com.ning.http.client.providers.netty.request.body.NettyFileBody;
 import com.ning.http.client.providers.netty.request.body.NettyInputStreamBody;
 import com.ning.http.client.providers.netty.request.body.NettyMultipartBody;
 import com.ning.http.client.providers.netty.spnego.SpnegoEngine;
-import com.ning.http.client.uri.UriComponents;
+import com.ning.http.client.uri.Uri;
 import com.ning.http.util.UTF8UrlEncoder;
 
 import java.io.IOException;
@@ -72,12 +72,12 @@ public final class NettyRequestFactory {
         this.nettyConfig = nettyConfig;
     }
 
-    private String requestUri(UriComponents uri, ProxyServer proxyServer, HttpMethod method) {
+    private String requestUri(Uri uri, ProxyServer proxyServer, HttpMethod method) {
         if (method == HttpMethod.CONNECT)
             return getAuthority(uri);
 
         else if (proxyServer != null && !(useProxyConnect(uri) && config.isUseRelativeURIsWithConnectProxies()))
-            return uri.toString();
+            return uri.toUrl();
 
         else {
             String path = getNonEmptyPath(uri);
@@ -88,12 +88,12 @@ public final class NettyRequestFactory {
         }
     }
 
-    private String hostHeader(Request request, UriComponents uri) {
+    private String hostHeader(Request request, Uri uri) {
         String host = request.getVirtualHost() != null ? request.getVirtualHost() : uri.getHost();
         return request.getVirtualHost() != null || uri.getPort() == -1 ? host : host + ":" + uri.getPort();
     }
 
-    private String authorizationHeader(Request request, UriComponents uri, ProxyServer proxyServer, Realm realm) throws IOException {
+    private String authorizationHeader(Request request, Uri uri, ProxyServer proxyServer, Realm realm) throws IOException {
 
         String authorizationHeader = null;
 
@@ -189,9 +189,9 @@ public final class NettyRequestFactory {
         StringBuilder sb = new StringBuilder();
         for (Param param : params) {
             UTF8UrlEncoder.appendEncoded(sb, param.getName());
-            sb.append("=");
+            sb.append('=');
             UTF8UrlEncoder.appendEncoded(sb, param.getValue());
-            sb.append("&");
+            sb.append('&');
         }
         sb.setLength(sb.length() - 1);
         return sb.toString().getBytes(bodyCharset);
@@ -241,7 +241,7 @@ public final class NettyRequestFactory {
         return nettyBody;
     }
 
-    public NettyRequest newNettyRequest(Request request, UriComponents uri, boolean forceConnect, ProxyServer proxyServer)
+    public NettyRequest newNettyRequest(Request request, Uri uri, boolean forceConnect, ProxyServer proxyServer)
             throws IOException {
 
         HttpMethod method = forceConnect ? HttpMethod.CONNECT : HttpMethod.valueOf(request.getMethod());
@@ -264,64 +264,66 @@ public final class NettyRequestFactory {
             nettyRequest = new NettyRequest(httpRequest, body);
         }
 
+        HttpHeaders headers = httpRequest.headers();
+
         if (method != HttpMethod.CONNECT) {
             // assign headers as configured on request
             for (Entry<String, List<String>> header : request.getHeaders()) {
-                httpRequest.headers().set(header.getKey(), header.getValue());
+                headers.set(header.getKey(), header.getValue());
             }
 
             if (isNonEmpty(request.getCookies()))
-                httpRequest.headers().set(HttpHeaders.Names.COOKIE, CookieEncoder.encode(request.getCookies()));
+                headers.set(HttpHeaders.Names.COOKIE, CookieEncoder.encode(request.getCookies()));
 
-            if (config.isCompressionEnabled())
-                httpRequest.headers().set(HttpHeaders.Names.ACCEPT_ENCODING, GZIP_DEFLATE);
+            if (config.isCompressionEnforced() && !headers.contains(HttpHeaders.Names.ACCEPT_ENCODING))
+                headers.set(HttpHeaders.Names.ACCEPT_ENCODING, GZIP_DEFLATE);
         }
 
         if (body != null) {
-            if (body.getContentLength() > 0)
-                httpRequest.headers().set(HttpHeaders.Names.CONTENT_LENGTH, body.getContentLength());
+            if (body.getContentLength() < 0)
+                headers.set(HttpHeaders.Names.TRANSFER_ENCODING, HttpHeaders.Values.CHUNKED);
             else
-                httpRequest.headers().set(HttpHeaders.Names.TRANSFER_ENCODING, HttpHeaders.Values.CHUNKED);
+                headers.set(HttpHeaders.Names.CONTENT_LENGTH, body.getContentLength());
 
             if (body.getContentType() != null)
-                httpRequest.headers().set(HttpHeaders.Names.CONTENT_TYPE, body.getContentType());
+                headers.set(HttpHeaders.Names.CONTENT_TYPE, body.getContentType());
         }
 
         // connection header and friends
         boolean webSocket = isWebSocket(uri.getScheme());
         if (method != HttpMethod.CONNECT && webSocket) {
             String origin = "http://" + uri.getHost() + ":" + (uri.getPort() == -1 ? isSecure(uri.getScheme()) ? 443 : 80 : uri.getPort());
-            httpRequest.headers().set(HttpHeaders.Names.UPGRADE, HttpHeaders.Values.WEBSOCKET)//
+            headers.set(HttpHeaders.Names.UPGRADE, HttpHeaders.Values.WEBSOCKET)//
                     .set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.UPGRADE)//
                     .set(HttpHeaders.Names.ORIGIN, origin)//
                     .set(HttpHeaders.Names.SEC_WEBSOCKET_KEY, getKey())//
                     .set(HttpHeaders.Names.SEC_WEBSOCKET_VERSION, "13");
 
-        } else if (!httpRequest.headers().contains(HttpHeaders.Names.CONNECTION)) {
-            httpRequest.headers().set(HttpHeaders.Names.CONNECTION, keepAliveHeaderValue(config));
+        } else if (!headers.contains(HttpHeaders.Names.CONNECTION)) {
+            headers.set(HttpHeaders.Names.CONNECTION, keepAliveHeaderValue(config));
         }
 
         String hostHeader = hostHeader(request, uri);
         if (hostHeader != null)
-            httpRequest.headers().set(HttpHeaders.Names.HOST, hostHeader);
+            headers.set(HttpHeaders.Names.HOST, hostHeader);
 
         Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
         String authorizationHeader = authorizationHeader(request, uri, proxyServer, realm);
         if (authorizationHeader != null)
             // don't override authorization but append
-            httpRequest.headers().add(HttpHeaders.Names.AUTHORIZATION, authorizationHeader);
+            headers.add(HttpHeaders.Names.AUTHORIZATION, authorizationHeader);
 
         String proxyAuthorizationHeader = proxyAuthorizationHeader(request, proxyServer, method);
         if (proxyAuthorizationHeader != null)
-            httpRequest.headers().set(HttpHeaders.Names.PROXY_AUTHORIZATION, proxyAuthorizationHeader);
+            headers.set(HttpHeaders.Names.PROXY_AUTHORIZATION, proxyAuthorizationHeader);
 
         // Add default accept headers
-        if (!httpRequest.headers().contains(HttpHeaders.Names.ACCEPT))
-            httpRequest.headers().set(HttpHeaders.Names.ACCEPT, "*/*");
+        if (!headers.contains(HttpHeaders.Names.ACCEPT))
+            headers.set(HttpHeaders.Names.ACCEPT, "*/*");
 
         // Add default user agent
-        if (!httpRequest.headers().contains(HttpHeaders.Names.USER_AGENT) && config.getUserAgent() != null)
-            httpRequest.headers().set(HttpHeaders.Names.USER_AGENT, config.getUserAgent());
+        if (!headers.contains(HttpHeaders.Names.USER_AGENT) && config.getUserAgent() != null)
+            headers.set(HttpHeaders.Names.USER_AGENT, config.getUserAgent());
 
         return nettyRequest;
     }

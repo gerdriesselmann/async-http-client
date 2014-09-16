@@ -40,8 +40,8 @@ public class Processor extends SimpleChannelUpstreamHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Processor.class);
 
-    public static final IOException REMOTELY_CLOSED_EXCEPTION = new IOException("Remotely Closed");
-    public static final IOException CHANNEL_CLOSED_EXCEPTION = new IOException("Channel Closed");
+    public static final IOException REMOTELY_CLOSED_EXCEPTION = new IOException("Remotely closed");
+    public static final IOException CHANNEL_CLOSED_EXCEPTION = new IOException("Channel closed");
     static {
         REMOTELY_CLOSED_EXCEPTION.setStackTrace(new StackTraceElement[0]);
         CHANNEL_CLOSED_EXCEPTION.setStackTrace(new StackTraceElement[0]);
@@ -71,9 +71,6 @@ public class Processor extends SimpleChannelUpstreamHandler {
         Channel channel = ctx.getChannel();
         Object attribute = Channels.getAttribute(channel);
 
-        if (attribute == null)
-            LOGGER.debug("ChannelHandlerContext doesn't have any attribute");
-
         if (attribute instanceof Callback) {
             Object message = e.getMessage();
             Callback ac = (Callback) attribute;
@@ -82,6 +79,7 @@ public class Processor extends SimpleChannelUpstreamHandler {
                 if (HttpChunk.class.cast(message).isLast())
                     // process the AsyncCallable before passing the message to the protocol
                     ac.call();
+                    // FIXME remove attribute?
             } else {
                 LOGGER.info("Received unexpected message while expecting a chunk: " + message);
                 ac.call();
@@ -94,11 +92,8 @@ public class Processor extends SimpleChannelUpstreamHandler {
 
         } else if (attribute != DiscardEvent.INSTANCE) {
             // unhandled message
-            try {
-                ctx.getChannel().close();
-            } catch (Throwable t) {
-                LOGGER.trace("Closing an orphan channel {}", ctx.getChannel());
-            }
+            LOGGER.debug("Orphan channel {} with attribute {} received message {}, closing", channel, attribute, e.getMessage());
+            Channels.silentlyCloseChannel(channel);
         }
     }
 
@@ -133,13 +128,13 @@ public class Processor extends SimpleChannelUpstreamHandler {
                     && requestSender.applyIoExceptionFiltersAndReplayRequest(future, CHANNEL_CLOSED_EXCEPTION, channel))
                 return;
 
-            protocol.onClose(channel);
+            protocol.onClose(future);
 
-            if (future == null || future.isDone())
+            if (future.isDone())
                 channelManager.closeChannel(channel);
 
-            else if (!requestSender.retry(future, ctx.getChannel()))
-                requestSender.abort(future, REMOTELY_CLOSED_EXCEPTION);
+            else if (!requestSender.retry(future))
+                requestSender.abort(channel, future, REMOTELY_CLOSED_EXCEPTION);
         }
     }
 
@@ -149,6 +144,7 @@ public class Processor extends SimpleChannelUpstreamHandler {
         Throwable cause = e.getCause();
         NettyResponseFuture<?> future = null;
 
+        // FIXME we can't get a PrematureChannelClosureException as we create the HttpClientCodec without setting failOnMissingResponse to true
         if (cause instanceof PrematureChannelClosureException || cause instanceof ClosedChannelException)
             return;
 
@@ -164,20 +160,15 @@ public class Processor extends SimpleChannelUpstreamHandler {
                 if (cause instanceof IOException) {
 
                     // FIXME why drop the original exception and throw a new one?
-                    if (!config.getIOExceptionFilters().isEmpty())
-                        if (requestSender.applyIoExceptionFiltersAndReplayRequest(future, CHANNEL_CLOSED_EXCEPTION, channel))
-                            return;
-                        else {
+                    if (!config.getIOExceptionFilters().isEmpty()) {
+                        if (!requestSender.applyIoExceptionFiltersAndReplayRequest(future, CHANNEL_CLOSED_EXCEPTION, channel))
                             // Close the channel so the recovering can occurs.
-                            try {
-                                channel.close();
-                            } catch (Throwable t) {
-                                // Swallow.
-                            }
-                            return;
-                        }
+                            Channels.silentlyCloseChannel(channel);
+                        return;
+                    }
                 }
 
+                // FIXME how does recovery occur?!
                 if (StackTraceInspector.abortOnReadOrWriteException(cause)) {
                     LOGGER.debug("Trying to recover from dead Channel: {}", channel);
                     return;
@@ -192,12 +183,11 @@ public class Processor extends SimpleChannelUpstreamHandler {
         if (future != null)
             try {
                 LOGGER.debug("Was unable to recover Future: {}", future);
-                requestSender.abort(future, cause);
+                requestSender.abort(channel, future, cause);
+                protocol.onError(future, e.getCause());
             } catch (Throwable t) {
                 LOGGER.error(t.getMessage(), t);
             }
-
-        protocol.onError(channel, e.getCause());
 
         channelManager.closeChannel(channel);
         ctx.sendUpstream(e);

@@ -18,7 +18,7 @@ package com.ning.http.client;
 
 import com.ning.http.client.cookie.Cookie;
 import com.ning.http.client.multipart.Part;
-import com.ning.http.client.uri.UriComponents;
+import com.ning.http.client.uri.Uri;
 
 import java.io.File;
 import java.io.InputStream;
@@ -34,7 +34,6 @@ import java.util.List;
  *                      .setPassword(admin)
  *                      .setRealmName("MyRealm")
  *                      .setScheme(Realm.AuthScheme.DIGEST).build());
- *   r.execute();
  * </pre></blockquote>
  */
 public interface Request {
@@ -46,7 +45,9 @@ public interface Request {
      */
     String getMethod();
 
-    UriComponents getURI();
+    Uri getUri();
+
+    String getUrl();
 
     /**
      * Return the InetAddress to override
@@ -183,5 +184,5 @@ public interface Request {
      */
     String getBodyEncoding();
 
-    ConnectionPoolKeyStrategy getConnectionPoolKeyStrategy();
+    ConnectionPoolPartitioning getConnectionPoolPartitioning();
 }
