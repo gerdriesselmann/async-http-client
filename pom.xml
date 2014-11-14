@@ -241,9 +241,14 @@
                 </configuration>
             </plugin>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-scm-plugin</artifactId>
+                <version>1.6</version>
+            </plugin>
+            <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>animal-sniffer-maven-plugin</artifactId>
-                <version>1.6</version>
+                <version>1.11</version>
                 <configuration>
                     <signature>
                         <groupId>org.codehaus.mojo.signature</groupId>
@@ -550,7 +555,7 @@
     <properties>
         <distMgmtSnapshotsUrl>http://oss.sonatype.org/content/repositories/snapshots</distMgmtSnapshotsUrl>
         <surefire.redirectTestOutputToFile>true</surefire.redirectTestOutputToFile>
-        <netty.version>3.9.4.Final</netty.version>
+        <netty.version>3.9.5.Final</netty.version>
         <grizzly.version>2.3.16</grizzly.version>
         <maven.compiler.source>1.7</maven.compiler.source>
         <maven.compiler.target>1.7</maven.compiler.target>
