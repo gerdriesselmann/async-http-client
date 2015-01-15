@@ -79,6 +79,8 @@ public class AsyncHttpClientConfig {
     protected boolean disableUrlEncodingForBoundRequests;
     protected int ioThreadMultiplier;
     protected TimeConverter timeConverter;
+    protected String[] enabledProtocols;
+    protected String[] enabledCipherSuites;
     protected AsyncHttpProviderConfig<?, ?> providerConfig;
 
     protected AsyncHttpClientConfig() {
@@ -114,6 +116,8 @@ public class AsyncHttpClientConfig {
             boolean disableUrlEncodingForBoundedRequests, //
             int ioThreadMultiplier, //
             TimeConverter timeConverter,//
+            String[] enabledProtocols,//
+            String[] enabledCipherSuites,//
             AsyncHttpProviderConfig<?, ?> providerConfig) {
 
         this.connectTimeout = connectTimeout;
@@ -146,6 +150,8 @@ public class AsyncHttpClientConfig {
         this.disableUrlEncodingForBoundRequests = disableUrlEncodingForBoundedRequests;
         this.ioThreadMultiplier = ioThreadMultiplier;
         this.timeConverter = timeConverter;
+        this.enabledProtocols = enabledProtocols;
+        this.enabledCipherSuites = enabledCipherSuites;
         this.providerConfig = providerConfig;
     }
 
@@ -205,9 +211,9 @@ public class AsyncHttpClientConfig {
     }
 
     /**
-     * Return the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} wait for a response
+     * Return the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} waits until the response is completed.
      *
-     * @return the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} wait for a response
+     * @return the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} waits until the response is completed.
      */
     public int getRequestTimeout() {
         return requestTimeout;
@@ -450,6 +456,20 @@ public class AsyncHttpClientConfig {
     }
 
     /**
+     * since 1.9.0
+     */
+    public String[] getEnabledProtocols() {
+        return enabledProtocols;
+    }
+
+    /**
+     * since 1.9.0
+     */
+    public String[] getEnabledCipherSuites() {
+        return enabledCipherSuites;
+    }
+
+    /**
      * Builder for an {@link AsyncHttpClient}
      */
     public static class Builder {
@@ -484,6 +504,8 @@ public class AsyncHttpClientConfig {
         private int maxRequestRetry = defaultMaxRequestRetry();
         private boolean disableUrlEncodingForBoundedRequests = defaultDisableUrlEncodingForBoundRequests();
         private int ioThreadMultiplier = defaultIoThreadMultiplier();
+        private String[] enabledProtocols;
+        private String[] enabledCipherSuites;
         private TimeConverter timeConverter;
         private AsyncHttpProviderConfig<?, ?> providerConfig;
 
@@ -562,9 +584,9 @@ public class AsyncHttpClientConfig {
         }
 
         /**
-         * Set the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} wait for a response
+         * Set the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} waits until the response is completed.
          *
-         * @param requestTimeout the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} wait for a response
+         * @param requestTimeout the maximum time in millisecond an {@link com.ning.http.client.AsyncHttpClient} waits until the response is completed.
          * @return a {@link Builder}
          */
         public Builder setRequestTimeout(int requestTimeout) {
@@ -903,6 +925,16 @@ public class AsyncHttpClientConfig {
             return this;
         }
 
+        public Builder setEnabledProtocols(String[] enabledProtocols) {
+            this.enabledProtocols = enabledProtocols;
+            return this;
+        }
+
+        public Builder setEnabledCipherSuites(String[] enabledCipherSuites) {
+            this.enabledCipherSuites = enabledCipherSuites;
+            return this;
+        }
+
         /**
          * Create a config builder with values taken from the given prototype configuration.
          *
@@ -943,6 +975,8 @@ public class AsyncHttpClientConfig {
             hostnameVerifier = prototype.getHostnameVerifier();
             strict302Handling = prototype.isStrict302Handling();
             timeConverter = prototype.timeConverter;
+            enabledProtocols = prototype.enabledProtocols;
+            enabledCipherSuites = prototype.enabledCipherSuites;
             acceptAnyCertificate = prototype.acceptAnyCertificate;
         }
 
@@ -1006,6 +1040,8 @@ public class AsyncHttpClientConfig {
                     disableUrlEncodingForBoundedRequests, //
                     ioThreadMultiplier, //
                     timeConverter,//
+                    enabledProtocols, //
+                    enabledCipherSuites, //
                     providerConfig);
         }
     }

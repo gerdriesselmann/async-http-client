@@ -39,6 +39,7 @@ import com.ning.http.client.ConnectionPoolPartitioning;
 import com.ning.http.client.FluentCaseInsensitiveStringsMap;
 import com.ning.http.client.ListenableFuture;
 import com.ning.http.client.ProxyServer;
+import com.ning.http.client.Realm;
 import com.ning.http.client.Request;
 import com.ning.http.client.filter.FilterContext;
 import com.ning.http.client.filter.FilterException;
@@ -205,7 +206,7 @@ public final class NettyRequestSender {
         future.setState(NettyResponseFuture.STATE.POOLED);
         future.attachChannel(channel, false);
 
-        LOGGER.debug("\nUsing cached Channel {}\n for request \n{}\n", channel, future.getNettyRequest().getHttpRequest());
+        LOGGER.debug("Using cached Channel {}\n for request \n{}\n", channel, future.getNettyRequest().getHttpRequest());
         Channels.setAttribute(channel, future);
 
         try {
@@ -243,6 +244,13 @@ public final class NettyRequestSender {
 
         boolean useSSl = isSecure(uri) && !useProxy;
 
+        // some headers are only set when performing the first request
+        HttpHeaders headers = future.getNettyRequest().getHttpRequest().headers();
+        Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
+        HttpMethod method = future.getNettyRequest().getHttpRequest().getMethod();
+        requestFactory.addAuthorizationHeader(headers, requestFactory.firstRequestOnlyAuthorizationHeader(request, uri, proxy, realm));
+        requestFactory.setProxyAuthorizationHeader(headers, requestFactory.firstRequestOnlyProxyAuthorizationHeader(request, proxy, method));
+
         // Do not throw an exception when we need an extra connection for a
         // redirect
         // FIXME why? This violate the max connection per host handling, right?
@@ -268,7 +276,7 @@ public final class NettyRequestSender {
             if (asyncHandler instanceof AsyncHandlerExtensions)
                 AsyncHandlerExtensions.class.cast(asyncHandler).onOpenConnection();
 
-            ChannelFuture channelFuture = connect(request, uri, proxy, useProxy, bootstrap);
+            ChannelFuture channelFuture = connect(request, uri, proxy, useProxy, bootstrap, asyncHandler);
             channelFuture.addListener(new NettyConnectListener<T>(config, future, this, channelManager, channelPreempted, poolKey));
 
         } catch (Throwable t) {
@@ -300,17 +308,17 @@ public final class NettyRequestSender {
     }
 
     public <T> void writeRequest(NettyResponseFuture<T> future, Channel channel) {
-        
+
         NettyRequest nettyRequest = future.getNettyRequest();
         HttpRequest httpRequest = nettyRequest.getHttpRequest();
         AsyncHandler<T> handler = future.getAsyncHandler();
-        
+
         // if the channel is dead because it was pooled and the remote
         // server decided to close it,
         // we just let it go and the channelInactive do its work
         if (!Channels.isChannelValid(channel))
             return;
-        
+
         try {
             if (handler instanceof TransferCompletionHandler)
                 configureTransferAdapter(handler, httpRequest);
@@ -354,8 +362,11 @@ public final class NettyRequestSender {
             return new InetSocketAddress(proxy.getHost(), proxy.getPort());
     }
 
-    private ChannelFuture connect(Request request, Uri uri, ProxyServer proxy, boolean useProxy, ClientBootstrap bootstrap) {
+    private ChannelFuture connect(Request request, Uri uri, ProxyServer proxy, boolean useProxy, ClientBootstrap bootstrap, AsyncHandler<?> asyncHandler) {
         InetSocketAddress remoteAddress = remoteAddress(request, uri, proxy, useProxy);
+
+        if (asyncHandler instanceof AsyncHandlerExtensions)
+            AsyncHandlerExtensions.class.cast(asyncHandler).onDnsResolved();
 
         if (request.getLocalAddress() != null)
             return bootstrap.connect(remoteAddress, new InetSocketAddress(request.getLocalAddress(), 0));
@@ -476,7 +487,7 @@ public final class NettyRequestSender {
     }
 
     public Channel pollAndVerifyCachedChannel(Uri uri, ProxyServer proxy, ConnectionPoolPartitioning connectionPoolPartitioning, AsyncHandler<?> asyncHandler) {
- 
+
         if (asyncHandler instanceof AsyncHandlerExtensions)
             AsyncHandlerExtensions.class.cast(asyncHandler).onPoolConnection();
 

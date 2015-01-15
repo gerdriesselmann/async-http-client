@@ -202,13 +202,13 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
     // ------------------------------------------ Methods from AsyncHttpProvider
 
 
-    @SuppressWarnings({"unchecked"})
     @Override
-    public <T> ListenableFuture<T> execute(final Request request,
-                                           final AsyncHandler<T> handler) throws IOException {
+    public <T> ListenableFuture<T> execute(final Request request, final AsyncHandler<T> handler) {
 
         if (clientTransport.isStopped()) {
-            throw new IOException("AsyncHttpClient has been closed.");
+            IOException e = new IOException("AsyncHttpClient has been closed.");
+            handler.onThrowable(e);
+            return new ListenableFuture.CompletedFailure<>(e);
         }
         final ProxyServer proxy = ProxyUtils.getProxyServer(clientConfig, request);
         final GrizzlyResponseFuture<T> future = new GrizzlyResponseFuture<T>(this, request, handler, proxy);
@@ -248,19 +248,28 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
 
         try {
             connectionManager.doAsyncTrackedConnection(request, future, connectHandler);
+        } catch (IOException ioe) {
+            abort(future, ioe);
+        } catch (RuntimeException re) {
+            abort(future, re);
         } catch (Exception e) {
-            if (e instanceof RuntimeException) {
-                throw (RuntimeException) e;
-            } else if (e instanceof IOException) {
-                throw (IOException) e;
-            }
             if (LOGGER.isWarnEnabled()) {
                 LOGGER.warn(e.toString(), e);
             }
+            abort(future, e);
         }
 
         return future;
     }
+
+    private void abort(GrizzlyResponseFuture<?> future, Throwable t) {
+        if (!future.isDone()) {
+            LOGGER.debug("Aborting Future {}\n", future);
+            LOGGER.debug(t.getMessage(), t);
+            future.abort(t);
+        }
+    }
+
 
     @Override
     public void close() {
@@ -984,7 +993,7 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
                 case DIGEST:
                     return AuthenticatorUtils.computeDigestAuthentication(realm);
                 case NTLM:
-                    return ntlmEngine.generateType1Msg("NTLM " + realm.getNtlmDomain(), realm.getNtlmHost());
+                    return ntlmEngine.generateType1Msg();
                 default:
                     return null;
                 }
@@ -2899,19 +2908,15 @@ public class GrizzlyAsyncHttpProvider implements AsyncHttpProvider {
                     .setConnectTimeout(5000)
                     .setSSLContext(sslContext).build();
             AsyncHttpClient client = new AsyncHttpClient(new GrizzlyAsyncHttpProvider(config), config);
+            long start = System.currentTimeMillis();
             try {
-                long start = System.currentTimeMillis();
-                try {
-                    client.executeRequest(client.prepareGet("http://www.google.com").build()).get();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                } catch (ExecutionException e) {
-                    e.printStackTrace();
-                }
-                System.out.println("COMPLETE: " + (System.currentTimeMillis() - start) + "ms");
-            } catch (IOException e) {
+                client.executeRequest(client.prepareGet("http://www.google.com").build()).get();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
                 e.printStackTrace();
             }
+            LOGGER.debug("COMPLETE: " + (System.currentTimeMillis() - start) + "ms");
         }
 }
 
