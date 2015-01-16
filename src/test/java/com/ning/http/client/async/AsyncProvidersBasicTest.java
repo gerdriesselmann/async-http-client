@@ -1,5 +1,5 @@
 /*
- * Copyright 2010 Ning, Inc.
+ * Copyright 2010-2015 Ning, Inc.
  *
  * Ning licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
@@ -872,7 +872,7 @@ public abstract class AsyncProvidersBasicTest extends AbstractBasicTest {
         }
     }
 
-    @Test(groups = { "standalone", "default_provider", "async" })
+    @Test(groups = { "standalone", "default_provider", "async" }, expectedExceptions = { CancellationException.class })
     public void asyncDoPostDelayCancelTest() throws Throwable {
         AsyncHttpClient client = getAsyncHttpClient(null);
         try {
@@ -892,8 +892,8 @@ public abstract class AsyncProvidersBasicTest extends AbstractBasicTest {
             // sucks!
             Thread.sleep(1000);
             future.cancel(true);
-            Response response = future.get(TIMEOUT, TimeUnit.SECONDS);
-            Assert.assertNull(response);
+            future.get(TIMEOUT, TimeUnit.SECONDS);
+
         } finally {
             client.close();
         }

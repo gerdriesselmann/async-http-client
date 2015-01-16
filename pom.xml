@@ -9,7 +9,7 @@
     <groupId>com.ning</groupId>
     <artifactId>async-http-client</artifactId>
     <name>Asynchronous Http Client</name>
-    <version>1.9.0-LOCAL</version>
+    <version>1.9.6-LOCAL</version>
     <packaging>jar</packaging>
     <description>
         Async Http Client library purpose is to allow Java applications to easily execute HTTP requests and
@@ -531,7 +531,7 @@
         <distMgmtSnapshotsUrl>http://oss.sonatype.org/content/repositories/snapshots</distMgmtSnapshotsUrl>
         <surefire.redirectTestOutputToFile>true</surefire.redirectTestOutputToFile>
         <netty.version>3.10.1.Final-LOCAL</netty.version>
-        <grizzly.version>2.3.16</grizzly.version>
+        <grizzly.version>2.3.18</grizzly.version>
         <maven.compiler.source>1.7</maven.compiler.source>
         <maven.compiler.target>1.7</maven.compiler.target>
         <surefire.version>2.12</surefire.version>

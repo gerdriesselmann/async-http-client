@@ -17,6 +17,7 @@ import static com.ning.http.client.providers.netty.util.HttpUtils.isSecure;
 import static com.ning.http.client.providers.netty.util.HttpUtils.useProxyConnect;
 import static com.ning.http.util.AsyncHttpProviderUtils.getDefaultPort;
 import static com.ning.http.util.AsyncHttpProviderUtils.requestTimeout;
+import static com.ning.http.util.AsyncHttpProviderUtils.REMOTELY_CLOSED_EXCEPTION;
 import static com.ning.http.util.ProxyUtils.avoidProxy;
 import static com.ning.http.util.ProxyUtils.getProxyServer;
 
@@ -53,7 +54,7 @@ import com.ning.http.client.providers.netty.request.timeout.ReadTimeoutTimerTask
 import com.ning.http.client.providers.netty.request.timeout.RequestTimeoutTimerTask;
 import com.ning.http.client.providers.netty.request.timeout.TimeoutsHolder;
 import com.ning.http.client.uri.Uri;
-import com.ning.http.client.websocket.WebSocketUpgradeHandler;
+import com.ning.http.client.ws.WebSocketUpgradeHandler;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -70,7 +71,7 @@ public final class NettyRequestSender {
     private final Timer nettyTimer;
     private final AtomicBoolean closed;
     private final NettyRequestFactory requestFactory;
-    private final IOException tooManyConnections;
+
 
     public NettyRequestSender(AsyncHttpClientConfig config,//
             NettyAsyncHttpProviderConfig nettyConfig,//
@@ -82,8 +83,6 @@ public final class NettyRequestSender {
         this.nettyTimer = nettyTimer;
         this.closed = closed;
         requestFactory = new NettyRequestFactory(config, nettyConfig);
-        tooManyConnections = new IOException(String.format("Too many connections %s", config.getMaxConnections()));
-        tooManyConnections.setStackTrace(new StackTraceElement[] {});
     }
 
     public <T> ListenableFuture<T> sendRequest(final Request request,//
@@ -207,28 +206,35 @@ public final class NettyRequestSender {
         future.attachChannel(channel, false);
 
         LOGGER.debug("Using cached Channel {}\n for request \n{}\n", channel, future.getNettyRequest().getHttpRequest());
-        Channels.setAttribute(channel, future);
 
-        try {
-            writeRequest(future, channel);
-        } catch (Exception ex) {
-            // write request isn't supposed to throw Exceptions
-            LOGGER.debug("writeRequest failure", ex);
-            if (ex.getMessage() != null && ex.getMessage().contains("SSLEngine")) {
-                // FIXME what is this for? https://github.com/AsyncHttpClient/async-http-client/commit/a847c3d4523ccc09827743e15b17e6bab59c553b
-                // can such an exception happen as we write async?
-                LOGGER.debug("SSLEngine failure", ex);
-                future = null;
-            } else {
-                try {
-                    asyncHandler.onThrowable(ex);
-                } catch (Throwable t) {
-                    LOGGER.warn("doConnect.writeRequest()", t);
+        if (Channels.isChannelValid(channel)) {
+            Channels.setAttribute(channel, future);
+
+            try {
+                writeRequest(future, channel);
+            } catch (Exception ex) {
+                // write request isn't supposed to throw Exceptions
+                LOGGER.debug("writeRequest failure", ex);
+                if (ex.getMessage() != null && ex.getMessage().contains("SSLEngine")) {
+                    // FIXME what is this for? https://github.com/AsyncHttpClient/async-http-client/commit/a847c3d4523ccc09827743e15b17e6bab59c553b
+                    // can such an exception happen as we write async?
+                    LOGGER.debug("SSLEngine failure", ex);
+                    future = null;
+                } else {
+                    try {
+                        asyncHandler.onThrowable(ex);
+                    } catch (Throwable t) {
+                        LOGGER.warn("doConnect.writeRequest()", t);
+                    }
+                    IOException ioe = new IOException(ex.getMessage());
+                    ioe.initCause(ex);
+                    throw ioe;
                 }
-                IOException ioe = new IOException(ex.getMessage());
-                ioe.initCause(ex);
-                throw ioe;
             }
+        } else {
+            // bad luck, the channel was closed in-between
+            // there's a very good chance onClose was already notified but the future wasn't already registered
+            handleUnexpectedClosedChannel(channel, future);
         }
         return future;
     }
@@ -266,9 +272,7 @@ public final class NettyRequestSender {
                 // FIXME clean up
                 if (config.getMaxConnectionsPerHost() > 0)
                     poolKey = channelManager.getPartitionId(future);
-
-                if (!channelManager.preemptChannel(poolKey))
-                    throw tooManyConnections;
+                channelManager.preemptChannel(poolKey);
 
                 channelPreempted = true;
             }
@@ -324,17 +328,9 @@ public final class NettyRequestSender {
                 configureTransferAdapter(handler, httpRequest);
 
             if (!future.isHeadersAlreadyWrittenOnContinue()) {
-                try {
-                    if (future.getAsyncHandler() instanceof AsyncHandlerExtensions)
-                        AsyncHandlerExtensions.class.cast(future.getAsyncHandler()).onSendRequest(nettyRequest);
-                    channel.write(httpRequest).addListener(new ProgressListener(config, future.getAsyncHandler(), future, true));
-                } catch (Throwable cause) {
-                    // FIXME why not notify?
-                    LOGGER.debug(cause.getMessage(), cause);
-                    // FIXME what about the attribute? how could this fail?
-                    Channels.silentlyCloseChannel(channel);
-                    return;
-                }
+                if (future.getAsyncHandler() instanceof AsyncHandlerExtensions)
+                    AsyncHandlerExtensions.class.cast(future.getAsyncHandler()).onSendRequest(nettyRequest);
+                channel.write(httpRequest).addListener(new ProgressListener(config, future.getAsyncHandler(), future, true));
             }
 
             // FIXME what happens to this second write if the first one failed? Should it be done in the ProgressListener?
@@ -346,7 +342,8 @@ public final class NettyRequestSender {
             if (Channels.isChannelValid(channel))
                 scheduleTimeouts(future);
 
-        } catch (Throwable ioe) {
+        } catch (Throwable t) {
+            LOGGER.error("Can't write request", t);
             Channels.silentlyCloseChannel(channel);
         }
     }
@@ -418,6 +415,14 @@ public final class NettyRequestSender {
             LOGGER.debug(t.getMessage(), t);
             future.abort(t);
         }
+    }
+
+    public void handleUnexpectedClosedChannel(Channel channel, NettyResponseFuture<?> future) {
+        if (future.isDone())
+            channelManager.closeChannel(channel);
+
+        else if (!retry(future))
+            abort(channel, future, REMOTELY_CLOSED_EXCEPTION);
     }
 
     public boolean retry(NettyResponseFuture<?> future) {
@@ -520,7 +525,7 @@ public final class NettyRequestSender {
         if (future.getAsyncHandler() instanceof AsyncHandlerExtensions)
             AsyncHandlerExtensions.class.cast(future.getAsyncHandler()).onRetry();
 
-        channelManager.drainChannel(channel, future);
+        channelManager.drainChannelAndOffer(channel, future);
         sendNextRequest(newRequest, future);
         return;
     }

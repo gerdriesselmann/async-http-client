@@ -13,14 +13,10 @@
  */
 package com.ning.http.client.providers.netty.request.body;
 
-import org.jboss.netty.channel.Channel;
+import org.jboss.netty.buffer.ChannelBuffer;
+import org.jboss.netty.buffer.ChannelBuffers;
 
-import com.ning.http.client.AsyncHttpClientConfig;
-import com.ning.http.client.providers.netty.future.NettyResponseFuture;
-
-import java.io.IOException;
-
-public class NettyByteArrayBody implements NettyBody {
+public class NettyByteArrayBody extends NettyDirectBody {
 
     private final byte[] bytes;
     private final String contentType;
@@ -34,10 +30,6 @@ public class NettyByteArrayBody implements NettyBody {
         this.contentType = contentType;
     }
 
-    public byte[] getBytes() {
-        return bytes;
-    }
-
     @Override
     public long getContentLength() {
         return bytes.length;
@@ -49,7 +41,7 @@ public class NettyByteArrayBody implements NettyBody {
     }
 
     @Override
-    public void write(Channel channel, NettyResponseFuture<?> future, AsyncHttpClientConfig config) throws IOException {
-        throw new UnsupportedOperationException("This kind of body is supposed to be writen directly");
+    public ChannelBuffer channelBuffer() {
+        return ChannelBuffers.wrappedBuffer(bytes);
     }
 }

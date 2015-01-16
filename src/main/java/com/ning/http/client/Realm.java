@@ -21,18 +21,19 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.ning.http.client.uri.Uri;
+import com.ning.http.util.StringUtils;
 
-import java.io.UnsupportedEncodingException;
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * This class is required when authentication is needed. The class support DIGEST and BASIC.
  */
 public class Realm {
 
-    private static final String NC = "00000001";
+    private static final String DEFAULT_NC = "00000001";
 
     private final String principal;
     private final String password;
@@ -49,7 +50,7 @@ public class Realm {
     private final String methodName;
     private final boolean usePreemptiveAuth;
     private final Charset charset;
-    private final String host;
+    private final String ntlmHost;
     private final boolean useAbsoluteURI;
     private final boolean omitQuery;
     private final boolean targetProxy;
@@ -80,7 +81,7 @@ public class Realm {
                   boolean usePreemptiveAuth,
                   String ntlmDomain,
                   Charset charset,
-                  String host,
+                  String ntlmHost,
                   String opaque,
                   boolean useAbsoluteURI,
                   boolean omitQuery,
@@ -102,7 +103,7 @@ public class Realm {
         this.usePreemptiveAuth = usePreemptiveAuth;
         this.ntlmDomain = ntlmDomain;
         this.charset = charset;
-        this.host = host;
+        this.ntlmHost = ntlmHost;
         this.useAbsoluteURI = useAbsoluteURI;
         this.omitQuery = omitQuery;
         this.targetProxy = targetProxy;
@@ -116,12 +117,7 @@ public class Realm {
         return password;
     }
 
-    public AuthScheme getAuthScheme() {
-        return scheme;
-    }
-
     public AuthScheme getScheme() {
-
         return scheme;
     }
 
@@ -193,7 +189,7 @@ public class Realm {
      * @return the NTLM host
      */
     public String getNtlmHost() {
-        return host;
+        return ntlmHost;
     }
 
     public boolean isUseAbsoluteURI() {
@@ -287,17 +283,28 @@ public class Realm {
         private String response = "";
         private String opaque = "";
         private String qop = "auth";
-        private String nc = "00000001";
+        private String nc = DEFAULT_NC;
         private String cnonce = "";
         private Uri uri;
         private String methodName = "GET";
         private boolean usePreemptive = false;
         private String ntlmDomain = System.getProperty("http.auth.ntlm.domain", "");
         private Charset charset = UTF_8;
-        private String host = "localhost";
+        private String ntlmHost = "localhost";
         private boolean useAbsoluteURI = true;
         private boolean omitQuery = false;
         private boolean targetProxy = false;
+
+        private static final ThreadLocal<MessageDigest> digestThreadLocal = new ThreadLocal<MessageDigest>() {
+            @Override
+            protected MessageDigest initialValue() {
+                try {
+                    return MessageDigest.getInstance("MD5");
+                } catch (NoSuchAlgorithmException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        };
 
         public String getNtlmDomain() {
             return ntlmDomain;
@@ -309,11 +316,11 @@ public class Realm {
         }
 
         public String getNtlmHost() {
-            return host;
+            return ntlmHost;
         }
 
         public RealmBuilder setNtlmHost(String host) {
-            this.host = host;
+            this.ntlmHost = host;
             return this;
         }
 
@@ -515,14 +522,11 @@ public class Realm {
             return this;
         }
 
-        private void newCnonce() {
-            try {
-                MessageDigest md = MessageDigest.getInstance("MD5");
-                byte[] b = md.digest(String.valueOf(System.currentTimeMillis()).getBytes(ISO_8859_1));
-                cnonce = toHexString(b);
-            } catch (Exception e) {
-                throw new SecurityException(e);
-            }
+        private void newCnonce(MessageDigest md) {
+            byte[] b = new byte[8];
+            ThreadLocalRandom.current().nextBytes(b);
+            b = md.digest(b);
+            cnonce = toHexString(b);
         }
 
         /**
@@ -553,80 +557,64 @@ public class Realm {
             return this;
         }
 
-        private void newResponse() throws UnsupportedEncodingException {
-            MessageDigest md = null;
-            try {
-                md = MessageDigest.getInstance("MD5");
-            } catch (NoSuchAlgorithmException e) {
-                throw new SecurityException(e);
-            }
-            md.update(new StringBuilder(principal)
+        private void newResponse(MessageDigest md) {
+            StringBuilder sb = StringUtils.stringBuilder();
+            byte[] ha1 = md.digest(sb.append(principal)
                     .append(":")
                     .append(realmName)
                     .append(":")
                     .append(password)
                     .toString().getBytes(ISO_8859_1));
-            byte[] ha1 = md.digest();
+            sb.setLength(0);
+            
+            // BEWARE: compute first as it used the cached StringBuilder
+            String url = uri.toUrl();
+            
+            byte[] ha2 = md.digest(sb.append(methodName)
+                    .append(':')
+                    .append(url).toString().getBytes(ISO_8859_1));
+            sb.setLength(0);
 
-            md.reset();
-
-            //HA2 if qop is auth-int is methodName:url:md5(entityBody)
-            md.update(new StringBuilder(methodName)
-                    .append(':')
-                    .append(uri).toString().getBytes(ISO_8859_1));
-            byte[] ha2 = md.digest();
-
-            if(qop==null || qop.equals("")) {
-                 md.update(new StringBuilder(toBase16(ha1))
-                    .append(':')
-                    .append(nonce)
-                    .append(':')
-                    .append(toBase16(ha2)).toString().getBytes(ISO_8859_1));
-
-             } else {
-                 //qop ="auth" or "auth-int"
-                 md.update(new StringBuilder(toBase16(ha1))
-                    .append(':')
-                    .append(nonce)
-                    .append(':')
-                    .append(NC)
-                    .append(':')
-                    .append(cnonce)
-                    .append(':')
-                    .append(qop)
-                    .append(':')
-                    .append(toBase16(ha2)).toString().getBytes(ISO_8859_1));
+            appendBase16(sb, ha1);
+            sb.append(':').append(nonce).append(':');
+            
+            if (isNonEmpty(qop)) {
+                //qop ="auth" or "auth-int"
+                sb.append(nc)//
+                        .append(':')//
+                        .append(cnonce)//
+                        .append(':')//
+                        .append(qop)//
+                        .append(':');
             }
 
-            byte[] digest = md.digest();
-
+            appendBase16(sb, ha2);
+            byte[] digest = md.digest(sb.toString().getBytes(ISO_8859_1));
+            sb.setLength(0);
             response = toHexString(digest);
         }
 
         private static String toHexString(byte[] data) {
-            StringBuilder buffer = new StringBuilder();
-            for (int i = 0; i < data.length; i++) {
-                buffer.append(Integer.toHexString((data[i] & 0xf0) >>> 4));
-                buffer.append(Integer.toHexString(data[i] & 0x0f));
-            }
-            return buffer.toString();
+            StringBuilder buffer = StringUtils.stringBuilder();
+            appendBase16(buffer, data);
+            String hex = buffer.toString();
+            buffer.setLength(0);
+            return hex;
         }
 
-        private static String toBase16(byte[] bytes) {
-            int base = 16;
-            StringBuilder buf = new StringBuilder();
-            for (byte b : bytes) {
-                int bi = 0xff & b;
-                int c = '0' + (bi / base) % base;
-                if (c > '9')
-                    c = 'a' + (c - '0' - 10);
-                buf.append((char) c);
-                c = '0' + bi % base;
-                if (c > '9')
-                    c = 'a' + (c - '0' - 10);
-                buf.append((char) c);
+        
+        private static final char[] HEXADECIMAL = {
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd',
+            'e', 'f'
+        };
+
+        private static void appendBase16(StringBuilder buf, byte[] bytes) {
+            for (int i = 0; i < bytes.length; i++) {
+                final int low = (bytes[i] & 0x0f);
+                final int high = ((bytes[i] & 0xf0) >> 4);
+                buf.append(HEXADECIMAL[high]);
+                buf.append(HEXADECIMAL[low]);
             }
-            return buf.toString();
         }
 
         /**
@@ -638,12 +626,9 @@ public class Realm {
 
             // Avoid generating
             if (isNonEmpty(nonce)) {
-                newCnonce();
-                try {
-                    newResponse();
-                } catch (UnsupportedEncodingException e) {
-                    throw new RuntimeException(e);
-                }
+                MessageDigest md = digestThreadLocal.get();
+                newCnonce(md);
+                newResponse(md);
             }
 
             return new Realm(scheme,
@@ -661,12 +646,11 @@ public class Realm {
                     usePreemptive,
                     ntlmDomain,
                     charset,
-                    host,
+                    ntlmHost,
                     opaque,
                     useAbsoluteURI,
                     omitQuery,
                     targetProxy);
         }
     }
-
 }
