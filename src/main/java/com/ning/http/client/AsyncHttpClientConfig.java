@@ -61,7 +61,6 @@ public class AsyncHttpClientConfig {
 
     protected boolean followRedirect;
     protected int maxRedirects;
-    protected boolean removeQueryParamOnRedirect;
     protected boolean strict302Handling;
 
     protected ProxyServerSelector proxyServerSelector;
@@ -79,6 +78,8 @@ public class AsyncHttpClientConfig {
     protected int ioThreadMultiplier;
     protected String[] enabledProtocols;
     protected String[] enabledCipherSuites;
+    protected Integer sslSessionCacheSize;
+    protected Integer sslSessionTimeout;
     protected AsyncHttpProviderConfig<?, ?> providerConfig;
 
     protected AsyncHttpClientConfig() {
@@ -99,7 +100,6 @@ public class AsyncHttpClientConfig {
             boolean acceptAnyCertificate, //
             boolean followRedirect, //
             int maxRedirects, //
-            boolean removeQueryParamOnRedirect,//
             boolean strict302Handling, //
             ExecutorService applicationThreadPool,//
             ProxyServerSelector proxyServerSelector, //
@@ -115,6 +115,8 @@ public class AsyncHttpClientConfig {
             int ioThreadMultiplier, //
             String[] enabledProtocols,//
             String[] enabledCipherSuites,//
+            Integer sslSessionCacheSize,//
+            Integer sslSessionTimeout,//
             AsyncHttpProviderConfig<?, ?> providerConfig) {
 
         this.connectTimeout = connectTimeout;
@@ -132,7 +134,6 @@ public class AsyncHttpClientConfig {
         this.acceptAnyCertificate = acceptAnyCertificate;
         this.followRedirect = followRedirect;
         this.maxRedirects = maxRedirects;
-        this.removeQueryParamOnRedirect = removeQueryParamOnRedirect;
         this.strict302Handling = strict302Handling;
         this.proxyServerSelector = proxyServerSelector;
         this.useRelativeURIsWithConnectProxies = useRelativeURIsWithConnectProxies;
@@ -148,6 +149,8 @@ public class AsyncHttpClientConfig {
         this.ioThreadMultiplier = ioThreadMultiplier;
         this.enabledProtocols = enabledProtocols;
         this.enabledCipherSuites = enabledCipherSuites;
+        this.sslSessionCacheSize = sslSessionCacheSize;
+        this.sslSessionTimeout = sslSessionTimeout;
         this.providerConfig = providerConfig;
     }
 
@@ -360,15 +363,6 @@ public class AsyncHttpClientConfig {
     }
 
     /**
-     * Return true if the query parameters will be stripped from the request when a redirect is requested.
-     *
-     * @return true if the query parameters will be stripped from the request when a redirect is requested.
-     */
-    public boolean isRemoveQueryParamOnRedirect() {
-        return removeQueryParamOnRedirect;
-    }
-
-    /**
      * @return <code>true</code> if both the application and reaper thread pools
      *  haven't yet been shutdown.
      *
@@ -391,6 +385,12 @@ public class AsyncHttpClientConfig {
      * @return the {@link HostnameVerifier}
      */
     public HostnameVerifier getHostnameVerifier() {
+        if (hostnameVerifier == null && !acceptAnyCertificate) {
+            synchronized(this) {
+                if (hostnameVerifier == null)
+                    hostnameVerifier = new DefaultHostnameVerifier();
+            }
+        }
         return hostnameVerifier;
     }
 
@@ -459,6 +459,20 @@ public class AsyncHttpClientConfig {
     }
 
     /**
+     * since 1.9.13
+     */
+    public Integer getSslSessionCacheSize() {
+        return sslSessionCacheSize;
+    }
+
+    /**
+     * since 1.9.13
+     */
+    public Integer getSslSessionTimeout() {
+        return sslSessionTimeout;
+    }
+
+    /**
      * Builder for an {@link AsyncHttpClient}
      */
     public static class Builder {
@@ -477,7 +491,6 @@ public class AsyncHttpClientConfig {
         private boolean acceptAnyCertificate = defaultAcceptAnyCertificate();
         private boolean followRedirect = defaultFollowRedirect();
         private int maxRedirects = defaultMaxRedirects();
-        private boolean removeQueryParamOnRedirect = defaultRemoveQueryParamOnRedirect();
         private boolean strict302Handling = defaultStrict302Handling();
         private ProxyServerSelector proxyServerSelector = null;
         private boolean useProxySelector = defaultUseProxySelector();
@@ -487,14 +500,16 @@ public class AsyncHttpClientConfig {
         private String userAgent = defaultUserAgent();
         private ExecutorService applicationThreadPool;
         private Realm realm;
-        private final List<RequestFilter> requestFilters = new LinkedList<RequestFilter>();
-        private final List<ResponseFilter> responseFilters = new LinkedList<ResponseFilter>();
-        private final List<IOExceptionFilter> ioExceptionFilters = new LinkedList<IOExceptionFilter>();
+        private final List<RequestFilter> requestFilters = new LinkedList<>();
+        private final List<ResponseFilter> responseFilters = new LinkedList<>();
+        private final List<IOExceptionFilter> ioExceptionFilters = new LinkedList<>();
         private int maxRequestRetry = defaultMaxRequestRetry();
         private boolean disableUrlEncodingForBoundedRequests = defaultDisableUrlEncodingForBoundRequests();
         private int ioThreadMultiplier = defaultIoThreadMultiplier();
-        private String[] enabledProtocols;
+        private String[] enabledProtocols = defaultEnabledProtocols();
         private String[] enabledCipherSuites;
+        private Integer sslSessionCacheSize = defaultSslSessionCacheSize();
+        private Integer sslSessionTimeout = defaultSslSessionTimeout();
         private AsyncHttpProviderConfig<?, ?> providerConfig;
 
         public Builder() {
@@ -809,17 +824,6 @@ public class AsyncHttpClientConfig {
         }
 
         /**
-         * Set to false if you don't want the query parameters removed when a redirect occurs.
-         *
-         * @param removeQueryParamOnRedirect
-         * @return this
-         */
-        public Builder setRemoveQueryParamsOnRedirect(boolean removeQueryParamOnRedirect) {
-            this.removeQueryParamOnRedirect = removeQueryParamOnRedirect;
-            return this;
-        }
-
-        /**
          * Sets whether AHC should use the default JDK ProxySelector to select a proxy server.
          * <p/>
          * If useProxySelector is set to <code>true</code> but {@link #setProxyServer(ProxyServer)}
@@ -918,6 +922,16 @@ public class AsyncHttpClientConfig {
             return this;
         }
 
+        public Builder setSslSessionCacheSize(Integer sslSessionCacheSize) {
+            this.sslSessionCacheSize = sslSessionCacheSize;
+            return this;
+        }
+        
+        public Builder setSslSessionTimeout(Integer sslSessionTimeout) {
+            this.sslSessionTimeout = sslSessionTimeout;
+            return this;
+        }
+        
         /**
          * Create a config builder with values taken from the given prototype configuration.
          *
@@ -954,11 +968,12 @@ public class AsyncHttpClientConfig {
             ioThreadMultiplier = prototype.getIoThreadMultiplier();
             maxRequestRetry = prototype.getMaxRequestRetry();
             allowPoolingSslConnections = prototype.isAllowPoolingConnections();
-            removeQueryParamOnRedirect = prototype.isRemoveQueryParamOnRedirect();
             hostnameVerifier = prototype.getHostnameVerifier();
             strict302Handling = prototype.isStrict302Handling();
             enabledProtocols = prototype.enabledProtocols;
             enabledCipherSuites = prototype.enabledCipherSuites;
+            sslSessionCacheSize = prototype.sslSessionCacheSize;
+            sslSessionTimeout = prototype.sslSessionTimeout;
             acceptAnyCertificate = prototype.acceptAnyCertificate;
         }
 
@@ -989,8 +1004,6 @@ public class AsyncHttpClientConfig {
 
             if (acceptAnyCertificate)
                 hostnameVerifier = null;
-            else if (hostnameVerifier == null)
-                hostnameVerifier = new DefaultHostnameVerifier();
 
             return new AsyncHttpClientConfig(connectTimeout,//
                     maxConnections,//
@@ -1007,7 +1020,6 @@ public class AsyncHttpClientConfig {
                     acceptAnyCertificate, //
                     followRedirect, //
                     maxRedirects, //
-                    removeQueryParamOnRedirect,//
                     strict302Handling, //
                     applicationThreadPool, //
                     proxyServerSelector, //
@@ -1023,6 +1035,8 @@ public class AsyncHttpClientConfig {
                     ioThreadMultiplier, //
                     enabledProtocols, //
                     enabledCipherSuites, //
+                    sslSessionCacheSize, //
+                    sslSessionTimeout, //
                     providerConfig);
         }
     }

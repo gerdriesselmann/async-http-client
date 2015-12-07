@@ -15,6 +15,7 @@ package com.ning.http.client.providers.netty.request;
 
 import static com.ning.http.util.AsyncHttpProviderUtils.getBaseUrl;
 
+import com.ning.http.client.AsyncHandler;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelFuture;
 import org.jboss.netty.channel.ChannelFutureListener;
@@ -22,121 +23,106 @@ import org.jboss.netty.handler.ssl.SslHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.ning.http.client.AsyncHandler;
 import com.ning.http.client.AsyncHandlerExtensions;
-import com.ning.http.client.AsyncHttpClientConfig;
 import com.ning.http.client.providers.netty.channel.ChannelManager;
 import com.ning.http.client.providers.netty.channel.Channels;
 import com.ning.http.client.providers.netty.future.NettyResponseFuture;
 import com.ning.http.client.providers.netty.future.StackTraceInspector;
-import com.ning.http.util.Base64;
-
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLSession;
 
 import java.net.ConnectException;
-import java.nio.channels.ClosedChannelException;
 
 /**
  * Non Blocking connect.
  */
 public final class NettyConnectListener<T> implements ChannelFutureListener {
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyConnectListener.class);
-    private final AsyncHttpClientConfig config;
     private final NettyResponseFuture<T> future;
     private final NettyRequestSender requestSender;
     private final ChannelManager channelManager;
     private final boolean channelPreempted;
-    private final String poolKey;
+    private final Object partitionKey;
 
-    public NettyConnectListener(AsyncHttpClientConfig config,//
-            NettyResponseFuture<T> future,//
+    public NettyConnectListener(NettyResponseFuture<T> future,//
             NettyRequestSender requestSender,//
             ChannelManager channelManager,//
             boolean channelPreempted,//
-            String poolKey) {
-        this.config = config;
+            Object partitionKey) {
         this.future = future;
         this.requestSender = requestSender;
         this.channelManager = channelManager;
         this.channelPreempted = channelPreempted;
-        this.poolKey = poolKey;
+        this.partitionKey = partitionKey;
     }
 
     public NettyResponseFuture<T> future() {
         return future;
     }
 
-    private void abortChannelPreemption(String poolKey) {
+    private void abortChannelPreemption() {
         if (channelPreempted)
-            channelManager.abortChannelPreemption(poolKey);
+            channelManager.abortChannelPreemption(partitionKey);
     }
 
-    private void writeRequest(Channel channel, String poolKey) {
+    private void writeRequest(Channel channel) {
 
-        LOGGER.debug("Request using non cached Channel '{}':\n{}\n", channel, future.getNettyRequest().getHttpRequest());
+        LOGGER.debug("Using non-cached Channel {} for {} '{}'",
+                channel,
+                future.getNettyRequest().getHttpRequest().getMethod(),
+                future.getNettyRequest().getHttpRequest().getUri());
+
+        Channels.setAttribute(channel, future);
 
         if (future.isDone()) {
-            abortChannelPreemption(poolKey);
+            abortChannelPreemption();
             return;
         }
 
         if (future.getAsyncHandler() instanceof AsyncHandlerExtensions)
             AsyncHandlerExtensions.class.cast(future.getAsyncHandler()).onConnectionOpen();
 
-        channelManager.registerOpenChannel(channel);
+        channelManager.registerOpenChannel(channel, partitionKey);
         future.attachChannel(channel, false);
         requestSender.writeRequest(future, channel);
     }
 
     private void onFutureSuccess(final Channel channel) throws ConnectException {
-        Channels.setAttribute(channel, future);
-        final SslHandler sslHandler = ChannelManager.getSslHandler(channel.getPipeline());
 
-        final HostnameVerifier hostnameVerifier = config.getHostnameVerifier();
-        if (hostnameVerifier != null && sslHandler != null) {
-            final String host = future.getUri().getHost();
+        SslHandler sslHandler = channel.getPipeline().get(SslHandler.class);
+
+        if (sslHandler != null) {
             sslHandler.handshake().addListener(new ChannelFutureListener() {
+
                 @Override
                 public void operationComplete(ChannelFuture handshakeFuture) throws Exception {
                     if (handshakeFuture.isSuccess()) {
-                        Channel channel = (Channel) handshakeFuture.getChannel();
-                        SSLEngine engine = sslHandler.getEngine();
-                        SSLSession session = engine.getSession();
+                        final AsyncHandler<T> asyncHandler = future.getAsyncHandler();
+                        if (asyncHandler instanceof AsyncHandlerExtensions)
+                            AsyncHandlerExtensions.class.cast(asyncHandler).onSslHandshakeCompleted();
 
-                        if (LOGGER.isDebugEnabled())
-                            LOGGER.debug("onFutureSuccess: session = {}, id = {}, isValid = {}, host = {}", session.toString(),
-                                    Base64.encode(session.getId()), session.isValid(), host);
-                        if (hostnameVerifier.verify(host, session)) {
-                            final AsyncHandler<T> asyncHandler = future.getAsyncHandler();
-                            if (asyncHandler instanceof AsyncHandlerExtensions)
-                                AsyncHandlerExtensions.class.cast(asyncHandler).onSslHandshakeCompleted();
-
-                            writeRequest(channel, poolKey);
-                        } else {
-                            onFutureFailure(channel, new ConnectException("HostnameVerifier exception"));
-                        }
+                        writeRequest(channel);
                     } else {
                         onFutureFailure(channel, handshakeFuture.getCause());
                     }
                 }
             });
+
         } else {
-            writeRequest(channel, poolKey);
+            writeRequest(channel);
         }
     }
 
     private void onFutureFailure(Channel channel, Throwable cause) {
-        abortChannelPreemption(poolKey);
+        abortChannelPreemption();
 
         boolean canRetry = future.canRetry();
-        LOGGER.debug("Trying to recover from failing to connect channel {} with a retry value of {} ", channel, canRetry);
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("Trying to recover from failing to connect channel " + channel + " with a retry value of " + canRetry, cause);
+        }
         if (canRetry
                 && cause != null
-                && (cause instanceof ClosedChannelException || future.getState() != NettyResponseFuture.STATE.NEW || StackTraceInspector.abortOnDisconnectException(cause))) {
+                && (future.getState() != NettyResponseFuture.STATE.NEW || StackTraceInspector.recoverOnDisconnectException(cause))) {
 
-            if (!requestSender.retry(future))
+            if (requestSender.retry(future))
                 return;
         }
 

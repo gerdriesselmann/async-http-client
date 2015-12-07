@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 AsyncHttpClient Project. All rights reserved.
+ * Copyright (c) 2014-2015 AsyncHttpClient Project. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -13,7 +13,7 @@
  */
 package com.ning.http.client.providers.netty.handler;
 
-import static com.ning.http.client.providers.netty.util.HttpUtils.getNTLM;
+import static com.ning.http.util.AsyncHttpProviderUtils.getNTLM;
 import static com.ning.http.util.AsyncHttpProviderUtils.getDefaultPort;
 import static com.ning.http.util.MiscUtils.isNonEmpty;
 import static org.jboss.netty.handler.codec.http.HttpResponseStatus.CONTINUE;
@@ -47,7 +47,7 @@ import com.ning.http.client.providers.netty.request.NettyRequestSender;
 import com.ning.http.client.providers.netty.response.NettyResponseBodyPart;
 import com.ning.http.client.providers.netty.response.NettyResponseHeaders;
 import com.ning.http.client.providers.netty.response.NettyResponseStatus;
-import com.ning.http.client.providers.netty.spnego.SpnegoEngine;
+import com.ning.http.client.spnego.SpnegoEngine;
 import com.ning.http.client.uri.Uri;
 
 import java.io.IOException;
@@ -181,12 +181,21 @@ public final class HttpProtocol extends Protocol {
 
     private void finishUpdate(final NettyResponseFuture<?> future, Channel channel, boolean expectOtherChunks) throws IOException {
 
+        // cancel timeouts asap so they don't trigger while draining the channel or offering to the pool
+        future.cancelTimeouts();
+
         boolean keepAlive = future.isKeepAlive();
         if (expectOtherChunks && keepAlive)
             channelManager.drainChannelAndOffer(channel, future);
         else
-            channelManager.tryToOfferChannelToPool(channel, keepAlive, channelManager.getPartitionId(future));
-        markAsDone(future, channel);
+            channelManager.tryToOfferChannelToPool(channel, keepAlive, future.getPartitionKey());
+        
+        try {
+            future.done();
+        } catch (Throwable t) {
+            // Never propagate exception once we know we are done.
+            logger.debug(t.getMessage(), t);
+        }
     }
 
     private boolean updateBodyAndInterrupt(NettyResponseFuture<?> future, AsyncHandler<?> handler, NettyResponseBodyPart bodyPart)
@@ -195,21 +204,6 @@ public final class HttpProtocol extends Protocol {
         if (bodyPart.isUnderlyingConnectionToBeClosed())
             future.setKeepAlive(false);
         return interrupt;
-    }
-
-    private void markAsDone(NettyResponseFuture<?> future, final Channel channel) {
-        // We need to make sure everything is OK before adding the
-        // connection back to the pool.
-        try {
-            future.done();
-        } catch (Throwable t) {
-            // Never propagate exception once we know we are done.
-            logger.debug(t.getMessage(), t);
-        }
-
-        if (!future.isKeepAlive() || !channel.isConnected()) {
-            channelManager.closeChannel(channel);
-        }
     }
 
     private boolean exitAfterHandling401(//
@@ -430,7 +424,7 @@ public final class HttpProtocol extends Protocol {
                 || exitAfterHandling401(channel, future, response, request, statusCode, realm) || //
                 exitAfterHandling407(channel, future, response, request, statusCode, proxyServer) || //
                 exitAfterHandling100(channel, future, statusCode) || //
-                exitAfterHandlingRedirect(channel, future, response, request, statusCode) || //
+                exitAfterHandlingRedirect(channel, future, response, request, statusCode, realm) || //
                 exitAfterHandlingConnect(channel, future, request, proxyServer, statusCode, httpRequest) || //
                 exitAfterHandlingStatus(channel, future, response, handler, status) || //
                 exitAfterHandlingHeaders(channel, future, response, handler, responseHeaders) || //

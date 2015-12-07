@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2012 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2010-2015 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -12,8 +12,8 @@
  */
 package com.ning.http.util;
 
-import static java.nio.charset.StandardCharsets.*;
-import static com.ning.http.util.MiscUtils.isNonEmpty;
+import static com.ning.http.util.MiscUtils.*;
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.ning.http.client.AsyncHttpClientConfig;
 import com.ning.http.client.HttpResponseBodyPart;
@@ -26,6 +26,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.List;
 
@@ -36,24 +37,16 @@ import java.util.List;
  */
 public class AsyncHttpProviderUtils {
 
-    public static final IOException REMOTELY_CLOSED_EXCEPTION = new IOException("Remotely closed");
-
-    static {
-        REMOTELY_CLOSED_EXCEPTION.setStackTrace(new StackTraceElement[] {});
-    }
+    public static final IOException REMOTELY_CLOSED_EXCEPTION = buildStaticIOException("Remotely closed");
 
     public final static Charset DEFAULT_CHARSET = ISO_8859_1;
 
-    static final byte[] EMPTY_BYTE_ARRAY = "".getBytes();
+    public static final String HTTP = "http";
+    public static final String HTTPS = "https";
+    public static final String WEBSOCKET = "ws";
+    public static final String WEBSOCKET_SSL = "wss";
 
-    public static final void validateSupportedScheme(Uri uri) {
-        final String scheme = uri.getScheme();
-        if (scheme == null || !scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https") && !scheme.equalsIgnoreCase("ws")
-                && !scheme.equalsIgnoreCase("wss")) {
-            throw new IllegalArgumentException("The URI scheme, of the URI " + uri
-                    + ", must be equal (ignoring case) to 'http', 'https', 'ws', or 'wss'");
-        }
-    }
+    static final byte[] EMPTY_BYTE_ARRAY = "".getBytes();
 
     public final static String getBaseUrl(Uri uri) {
         return uri.getScheme() + "://" + getAuthority(uri);
@@ -89,15 +82,23 @@ public class AsyncHttpProviderUtils {
         }
     }
 
-    @SuppressWarnings("resource")
     public final static InputStream contentToInputStream(List<HttpResponseBodyPart> bodyParts) throws UnsupportedEncodingException {
         return bodyParts.isEmpty() ? new ByteArrayInputStream(EMPTY_BYTE_ARRAY) : new HttpResponseBodyPartsInputStream(bodyParts);
     }
 
-    public final static int getDefaultPort(Uri uri) {
+    public final static boolean isSameHostAndProtocol(Uri uri1, Uri uri2) {
+        return uri1.getScheme().equals(uri2.getScheme()) && uri1.getHost().equals(uri2.getHost())
+                && getDefaultPort(uri1) == getDefaultPort(uri2);
+    }
+
+    public static final int getSchemeDefaultPort(String scheme) {
+        return scheme.equals("http") || scheme.equals("ws") ? 80 : 443;
+    }
+
+    public static final int getDefaultPort(Uri uri) {
         int port = uri.getPort();
         if (port == -1)
-            port = uri.getScheme().equals("http") || uri.getScheme().equals("ws") ? 80 : 443;
+            port = getSchemeDefaultPort(uri.getScheme());
         return port;
     }
 
@@ -156,8 +157,13 @@ public class AsyncHttpProviderUtils {
         return null;
     }
 
-    public static String keepAliveHeaderValue(AsyncHttpClientConfig config) {
-        return config.isAllowPoolingConnections() ? "keep-alive" : "close";
+    public static String connectionHeader(boolean allowConnectionPooling, boolean http11) {
+        if (allowConnectionPooling)
+            return "keep-alive";
+        else if (http11)
+            return "close";
+        else
+            return null;
     }
 
     public static int requestTimeout(AsyncHttpClientConfig config, Request request) {
@@ -168,15 +174,52 @@ public class AsyncHttpProviderUtils {
         return request.getFollowRedirect() != null ? request.getFollowRedirect().booleanValue() : config.isFollowRedirect();
     }
 
-    public static String formParams2UTF8String(List<Param> params) {
+    public static StringBuilder urlEncodeFormParams0(List<Param> params) {
         StringBuilder sb = StringUtils.stringBuilder();
         for (Param param : params) {
-            UTF8UrlEncoder.appendEncoded(sb, param.getName());
-            sb.append("=");
-            UTF8UrlEncoder.appendEncoded(sb, param.getValue());
-            sb.append("&");
+            encodeAndAppendFormParam(sb, param.getName(), param.getValue());
         }
         sb.setLength(sb.length() - 1);
-        return sb.toString();
+        return sb;
+    }
+
+    public static ByteBuffer urlEncodeFormParams(List<Param> params, Charset charset) {
+        return StringUtils.charSequence2ByteBuffer(urlEncodeFormParams0(params), charset);
+    }
+
+    private static void encodeAndAppendFormParam(final StringBuilder sb, final CharSequence name, final CharSequence value) {
+        UTF8UrlEncoder.encodeAndAppendFormElement(sb, name);
+        if (value != null) {
+            sb.append('=');
+            UTF8UrlEncoder.encodeAndAppendFormElement(sb, value);
+        }
+        sb.append('&');
+    }
+
+    public static String getNTLM(List<String> authenticateHeaders) {
+        if (MiscUtils.isNonEmpty(authenticateHeaders)) {
+            for (String authenticateHeader : authenticateHeaders) {
+                if (authenticateHeader.startsWith("NTLM"))
+                    return authenticateHeader;
+            }
+        }
+
+        return null;
+    }
+
+    public static boolean isWebSocket(String scheme) {
+        return WEBSOCKET.equals(scheme) || WEBSOCKET_SSL.equalsIgnoreCase(scheme);
+    }
+
+    public static boolean isSecure(String scheme) {
+        return HTTPS.equals(scheme) || WEBSOCKET_SSL.equals(scheme);
+    }
+
+    public static boolean isSecure(Uri uri) {
+        return isSecure(uri.getScheme());
+    }
+
+    public static boolean useProxyConnect(Uri uri) {
+        return isSecure(uri) || isWebSocket(uri.getScheme());
     }
 }

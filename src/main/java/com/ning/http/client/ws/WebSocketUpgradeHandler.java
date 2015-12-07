@@ -77,11 +77,11 @@ public class WebSocketUpgradeHandler implements UpgradeHandler<WebSocket>, Async
             for (WebSocketListener listener : listeners) {
                 listener.onError(e);
             }
-            return null;
+            throw e;
         }
 
         if (webSocket == null) {
-            throw new IllegalStateException("WebSocket is null");
+            throw new NullPointerException("webSocket");
         }
         return webSocket;
     }
@@ -126,7 +126,7 @@ public class WebSocketUpgradeHandler implements UpgradeHandler<WebSocket>, Async
      */
     public final static class Builder {
 
-        private List<WebSocketListener> listeners = new ArrayList<WebSocketListener>(1);
+        private List<WebSocketListener> listeners = new ArrayList<>(1);
 
         /**
          * Add a {@link WebSocketListener} that will be added to the {@link WebSocket}

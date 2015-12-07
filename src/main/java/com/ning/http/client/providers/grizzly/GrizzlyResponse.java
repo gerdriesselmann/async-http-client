@@ -170,10 +170,9 @@ public class GrizzlyResponse extends ResponseBase {
         for (org.glassfish.grizzly.http.Cookie gCookie : grizzlyCookies) {
             convertedCookies.add(new Cookie(gCookie.getName(),
                                    gCookie.getValue(),
-                                   gCookie.getValue(),
+                                   false,
                                    gCookie.getDomain(),
                                    gCookie.getPath(),
-                                   -1L,
                                    gCookie.getMaxAge(),
                                    gCookie.isSecure(),
                                    false));

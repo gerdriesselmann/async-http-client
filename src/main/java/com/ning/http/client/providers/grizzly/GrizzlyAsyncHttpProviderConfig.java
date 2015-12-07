@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2012-2015 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -14,6 +14,8 @@
 package com.ning.http.client.providers.grizzly;
 
 import com.ning.http.client.AsyncHttpProviderConfig;
+import com.ning.http.client.SSLEngineFactory;
+import java.net.SocketAddress;
 
 import org.glassfish.grizzly.http.HttpCodecFilter;
 import org.glassfish.grizzly.nio.transport.TCPNIOTransport;
@@ -21,6 +23,7 @@ import org.glassfish.grizzly.nio.transport.TCPNIOTransport;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import org.glassfish.grizzly.connectionpool.MultiEndpointPool;
 
 /**
  * {@link AsyncHttpProviderConfig} implementation that allows customization
@@ -66,8 +69,15 @@ public class GrizzlyAsyncHttpProviderConfig implements AsyncHttpProviderConfig<G
          * invoked with the complete message.  If this functionality is not desired, set
          * this property to false.
          */
-        BUFFER_WEBSOCKET_FRAGMENTS(Boolean.class, true)
+        BUFFER_WEBSOCKET_FRAGMENTS(Boolean.class, true),
 
+        /**
+         * <tt>true</tt> (default), if an HTTP response has to be decompressed
+         * (if compressed by a server), or <tt>false</tt> if decompression
+         * has to be delegated to a user.
+         */
+        DECOMPRESS_RESPONSE(Boolean.class, true)
+        
         ;
         
         
@@ -92,8 +102,10 @@ public class GrizzlyAsyncHttpProviderConfig implements AsyncHttpProviderConfig<G
     
     private final Map<Property,Object> attributes = new HashMap<Property,Object>();
 
-    protected ConnectionPool connectionPool;
+    protected MultiEndpointPool<SocketAddress> connectionPool;
 
+    private SSLEngineFactory sslEngineFactory;
+    
     // ------------------------------------ Methods from AsyncHttpProviderConfig
 
     /**
@@ -149,11 +161,19 @@ public class GrizzlyAsyncHttpProviderConfig implements AsyncHttpProviderConfig<G
         return attributes.entrySet();
     }
 
-    public ConnectionPool getConnectionPool() {
+    public MultiEndpointPool<SocketAddress> getConnectionPool() {
         return connectionPool;
     }
 
-    public void setConnectionPool(ConnectionPool connectionPool) {
+    public void setConnectionPool(MultiEndpointPool<SocketAddress> connectionPool) {
         this.connectionPool = connectionPool;
+    }
+    
+    public SSLEngineFactory getSslEngineFactory() {
+        return sslEngineFactory;
+    }
+
+    public void setSslEngineFactory(SSLEngineFactory sslEngineFactory) {
+        this.sslEngineFactory = sslEngineFactory;
     }
 }

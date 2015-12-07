@@ -24,7 +24,7 @@ import com.ning.http.client.cookie.Cookie;
 import com.ning.http.client.multipart.Part;
 import com.ning.http.client.uri.Uri;
 import com.ning.http.util.AsyncHttpProviderUtils;
-import com.ning.http.util.QueryComputer;
+import com.ning.http.util.UriEncoder;
 
 import java.io.File;
 import java.io.InputStream;
@@ -69,6 +69,7 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         private long rangeOffset;
         public String charset;
         private ConnectionPoolPartitioning connectionPoolPartitioning = ConnectionPoolPartitioning.PerHostConnectionPoolPartitioning.INSTANCE;
+        private NameResolver nameResolver = NameResolver.JdkNameResolver.INSTANCE;
         private List<Param> queryParams;
 
         public RequestImpl() {
@@ -81,14 +82,14 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
                 this.address = prototype.getInetAddress();
                 this.localAddress = prototype.getLocalAddress();
                 this.headers = new FluentCaseInsensitiveStringsMap(prototype.getHeaders());
-                this.cookies = new ArrayList<Cookie>(prototype.getCookies());
+                this.cookies = new ArrayList<>(prototype.getCookies());
                 this.byteData = prototype.getByteData();
                 this.compositeByteData = prototype.getCompositeByteData();
                 this.stringData = prototype.getStringData();
                 this.streamData = prototype.getStreamData();
                 this.bodyGenerator = prototype.getBodyGenerator();
-                this.formParams = prototype.getFormParams() == null ? null : new ArrayList<Param>(prototype.getFormParams());
-                this.parts = prototype.getParts() == null ? null : new ArrayList<Part>(prototype.getParts());
+                this.formParams = prototype.getFormParams() == null ? null : new ArrayList<>(prototype.getFormParams());
+                this.parts = prototype.getParts() == null ? null : new ArrayList<>(prototype.getParts());
                 this.virtualHost = prototype.getVirtualHost();
                 this.length = prototype.getContentLength();
                 this.proxyServer = prototype.getProxyServer();
@@ -99,111 +100,141 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
                 this.rangeOffset = prototype.getRangeOffset();
                 this.charset = prototype.getBodyEncoding();
                 this.connectionPoolPartitioning = prototype.getConnectionPoolPartitioning();
+                this.nameResolver = prototype.getNameResolver();
             }
         }
 
+        @Override
         public String getMethod() {
             return method;
         }
 
+        @Override
         public InetAddress getInetAddress() {
             return address;
         }
 
+        @Override
         public InetAddress getLocalAddress() {
             return localAddress;
         }
 
+        @Override
         public Uri getUri() {
             return uri;
         }
 
+        @Override
         public String getUrl() {
             return uri.toUrl();
         }
 
+        @Override
         public FluentCaseInsensitiveStringsMap getHeaders() {
             return headers;
         }
 
+        @Override
         public Collection<Cookie> getCookies() {
             return cookies != null ? Collections.unmodifiableCollection(cookies) : Collections.<Cookie> emptyList();
         }
 
+        @Override
         public byte[] getByteData() {
             return byteData;
         }
 
+        @Override
         public List<byte[]> getCompositeByteData() {
             return compositeByteData;
         }
 
+        @Override
         public String getStringData() {
             return stringData;
         }
 
+        @Override
         public InputStream getStreamData() {
             return streamData;
         }
 
+        @Override
         public BodyGenerator getBodyGenerator() {
             return bodyGenerator;
         }
 
+        @Override
         public long getContentLength() {
             return length;
         }
 
+        @Override
         public List<Param> getFormParams() {
             return formParams != null ? formParams : Collections.<Param> emptyList();
         }
 
+        @Override
         public List<Part> getParts() {
             return parts != null ? parts : Collections.<Part> emptyList();
         }
 
+        @Override
         public String getVirtualHost() {
             return virtualHost;
         }
 
+        @Override
         public ProxyServer getProxyServer() {
             return proxyServer;
         }
 
+        @Override
         public Realm getRealm() {
             return realm;
         }
 
+        @Override
         public File getFile() {
             return file;
         }
 
+        @Override
         public Boolean getFollowRedirect() {
             return followRedirects;
         }
 
+        @Override
         public int getRequestTimeout() {
             return requestTimeout;
         }
 
+        @Override
         public long getRangeOffset() {
             return rangeOffset;
         }
 
+        @Override
         public String getBodyEncoding() {
             return charset;
         }
 
+        @Override
         public ConnectionPoolPartitioning getConnectionPoolPartitioning() {
             return connectionPoolPartitioning;
         }
 
         @Override
+        public NameResolver getNameResolver() {
+            return nameResolver;
+        }
+        
+        @Override
         public List<Param> getQueryParams() {
             if (queryParams == null)
                 // lazy load
                 if (isNonEmpty(uri.getQuery())) {
-                    queryParams = new ArrayList<Param>(1);
+                    queryParams = new ArrayList<>(1);
                     for (String queryStringParam : uri.getQuery().split("&")) {
                         int pos = queryStringParam.indexOf('=');
                         if (pos <= 0)
@@ -247,29 +278,29 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
 
     private final Class<T> derived;
     protected final RequestImpl request;
-    protected QueryComputer queryComputer;
-    protected List<Param> queryParams;
+    protected UriEncoder uriEncoder;
+    protected List<Param> rbQueryParams;
     protected SignatureCalculator signatureCalculator;
 
     protected RequestBuilderBase(Class<T> derived, String method, boolean disableUrlEncoding) {
-        this(derived, method, QueryComputer.queryComputer(disableUrlEncoding));
+        this(derived, method, UriEncoder.uriEncoder(disableUrlEncoding));
     }
 
-    protected RequestBuilderBase(Class<T> derived, String method, QueryComputer queryComputer) {
+    protected RequestBuilderBase(Class<T> derived, String method, UriEncoder uriEncoder) {
         this.derived = derived;
         request = new RequestImpl();
         request.method = method;
-        this.queryComputer = queryComputer;
+        this.uriEncoder = uriEncoder;
     }
 
     protected RequestBuilderBase(Class<T> derived, Request prototype) {
-        this(derived, prototype, QueryComputer.URL_ENCODING_ENABLED_QUERY_COMPUTER);
+        this(derived, prototype, UriEncoder.FIXING);
     }
 
-    protected RequestBuilderBase(Class<T> derived, Request prototype, QueryComputer queryComputer) {
+    protected RequestBuilderBase(Class<T> derived, Request prototype, UriEncoder uriEncoder) {
         this.derived = derived;
         request = new RequestImpl(prototype);
-        this.queryComputer = queryComputer;
+        this.uriEncoder = uriEncoder;
     }
     
     public T setUrl(String url) {
@@ -328,11 +359,11 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
 
     private void lazyInitCookies() {
         if (request.cookies == null)
-            request.cookies = new ArrayList<Cookie>(3);
+            request.cookies = new ArrayList<>(3);
     }
 
     public T setCookies(Collection<Cookie> cookies) {
-        request.cookies = new ArrayList<Cookie>(cookies);
+        request.cookies = new ArrayList<>(cookies);
         return derived.cast(this);
     }
 
@@ -368,7 +399,7 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
     }
     
     public void resetQuery() {
-        queryParams = null;
+        rbQueryParams = null;
         request.uri = request.uri.withNewQuery(null);
     }
     
@@ -432,17 +463,17 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
     }
 
     public T addQueryParam(String name, String value) {
-        if (queryParams == null)
-            queryParams = new ArrayList<Param>(1);
-        queryParams.add(new Param(name, value));
+        if (rbQueryParams == null)
+            rbQueryParams = new ArrayList<>(1);
+        rbQueryParams.add(new Param(name, value));
         return derived.cast(this);
     }
 
     public T addQueryParams(List<Param> params) {
-        if (queryParams == null)
-            queryParams = params;
+        if (rbQueryParams == null)
+            rbQueryParams = params;
         else
-            queryParams.addAll(params);
+            rbQueryParams.addAll(params);
         return derived.cast(this);
     }
 
@@ -450,7 +481,7 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         if (map == null)
             return null;
 
-        List<Param> params = new ArrayList<Param>(map.size());
+        List<Param> params = new ArrayList<>(map.size());
         for (Map.Entry<String, List<String>> entries : map.entrySet()) {
             String name = entries.getKey();
             for (String value : entries.getValue())
@@ -467,7 +498,7 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         // reset existing query
         if (isNonEmpty(request.uri.getQuery()))
             request.uri = request.uri.withNewQuery(null);
-        queryParams = params;
+        rbQueryParams = params;
         return derived.cast(this);
     }
     
@@ -475,7 +506,7 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         resetNonMultipartData();
         resetMultipartData();
         if (request.formParams == null)
-            request.formParams = new ArrayList<Param>(1);
+            request.formParams = new ArrayList<>(1);
         request.formParams.add(new Param(name, value));
         return derived.cast(this);
     }
@@ -539,6 +570,11 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         return derived.cast(this);
     }
 
+    public T setNameResolver(NameResolver nameResolver) {
+        request.nameResolver = nameResolver;
+        return derived.cast(this);
+    }
+
     public T setSignatureCalculator(SignatureCalculator signatureCalculator) {
         this.signatureCalculator = signatureCalculator;
         return derived.cast(this);
@@ -549,7 +585,10 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
          * (order does not matter with current implementation but may in future)
          */
         if (signatureCalculator != null) {
-            signatureCalculator.calculateAndAddSignature(request, this);
+            RequestBuilder rb = new RequestBuilder(request).setSignatureCalculator(null);
+            rb.rbQueryParams = this.rbQueryParams;
+            Request unsignedRequest = rb.build();
+            signatureCalculator.calculateAndAddSignature(unsignedRequest, this);
         }
     }
     
@@ -586,17 +625,25 @@ public abstract class RequestBuilderBase<T extends RequestBuilderBase<T>> {
         }
     }
 
+    private void validateSupportedScheme(Uri uri) {
+        final String scheme = uri.getScheme();
+        if (scheme == null || !scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https") && !scheme.equalsIgnoreCase("ws")
+                && !scheme.equalsIgnoreCase("wss")) {
+            throw new IllegalArgumentException("The URI scheme, of the URI " + uri
+                    + ", must be equal (ignoring case) to 'http', 'https', 'ws', or 'wss'");
+        }
+    }
+    
     private void computeFinalUri() {
 
         if (request.uri == null) {
             logger.debug("setUrl hasn't been invoked. Using {}", DEFAULT_REQUEST_URL);
             request.uri = DEFAULT_REQUEST_URL;
+        } else {
+            validateSupportedScheme(request.uri);
         }
 
-        AsyncHttpProviderUtils.validateSupportedScheme(request.uri);
-
-        String newQuery = queryComputer.computeFullQueryString(request.uri.getQuery(), queryParams);
-        request.uri = request.uri.withNewQuery(newQuery);
+        request.uri =  uriEncoder.encode(request.uri, rbQueryParams);
     }
 
     public Request build() {

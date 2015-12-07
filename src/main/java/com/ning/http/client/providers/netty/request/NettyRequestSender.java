@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 AsyncHttpClient Project. All rights reserved.
+ * Copyright (c) 2014-2015 AsyncHttpClient Project. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -12,12 +12,14 @@
  */
 package com.ning.http.client.providers.netty.request;
 
-import static com.ning.http.client.providers.netty.util.HttpUtils.WEBSOCKET;
-import static com.ning.http.client.providers.netty.util.HttpUtils.isSecure;
-import static com.ning.http.client.providers.netty.util.HttpUtils.useProxyConnect;
+import static com.ning.http.util.AsyncHttpProviderUtils.WEBSOCKET;
+import static com.ning.http.util.AsyncHttpProviderUtils.isSecure;
+import static com.ning.http.util.AsyncHttpProviderUtils.useProxyConnect;
+import static com.ning.http.util.AsyncHttpProviderUtils.REMOTELY_CLOSED_EXCEPTION;
 import static com.ning.http.util.AsyncHttpProviderUtils.getDefaultPort;
 import static com.ning.http.util.AsyncHttpProviderUtils.requestTimeout;
-import static com.ning.http.util.AsyncHttpProviderUtils.REMOTELY_CLOSED_EXCEPTION;
+import static com.ning.http.util.AuthenticatorUtils.perConnectionAuthorizationHeader;
+import static com.ning.http.util.AuthenticatorUtils.perConnectionProxyAuthorizationHeader;
 import static com.ning.http.util.ProxyUtils.avoidProxy;
 import static com.ning.http.util.ProxyUtils.getProxyServer;
 
@@ -57,7 +59,9 @@ import com.ning.http.client.uri.Uri;
 import com.ning.http.client.ws.WebSocketUpgradeHandler;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -95,9 +99,7 @@ public final class NettyRequestSender {
 
         Uri uri = request.getUri();
 
-        // FIXME really useful? Why not do this check when building the request?
-        if (uri.getScheme().startsWith(WEBSOCKET) && !validateWebSocketRequest(request, asyncHandler))
-            throw new IOException("WebSocket method must be a GET");
+        validateWebSocketRequest(request, uri, asyncHandler);
 
         ProxyServer proxyServer = getProxyServer(config, request);
         boolean resultOfAConnect = future != null && future.getNettyRequest() != null
@@ -187,13 +189,13 @@ public final class NettyRequestSender {
         }
     }
 
-    private Channel getCachedChannel(NettyResponseFuture<?> future, Uri uri, ConnectionPoolPartitioning poolKeyGen,
+    private Channel getCachedChannel(NettyResponseFuture<?> future, Uri uri, ConnectionPoolPartitioning partitioning,
             ProxyServer proxyServer, AsyncHandler<?> asyncHandler) {
 
         if (future != null && future.reuseChannel() && Channels.isChannelValid(future.channel()))
             return future.channel();
         else
-            return pollAndVerifyCachedChannel(uri, proxyServer, poolKeyGen, asyncHandler);
+            return pollAndVerifyCachedChannel(uri, proxyServer, partitioning, asyncHandler);
     }
 
     private <T> ListenableFuture<T> sendRequestWithCachedChannel(Request request, Uri uri, ProxyServer proxy,
@@ -205,7 +207,10 @@ public final class NettyRequestSender {
         future.setState(NettyResponseFuture.STATE.POOLED);
         future.attachChannel(channel, false);
 
-        LOGGER.debug("Using cached Channel {}\n for request \n{}\n", channel, future.getNettyRequest().getHttpRequest());
+        LOGGER.debug("Using cached Channel {} for {} '{}'",
+                channel,
+                future.getNettyRequest().getHttpRequest().getMethod(),
+                future.getNettyRequest().getHttpRequest().getUri());
 
         if (Channels.isChannelValid(channel)) {
             Channels.setAttribute(channel, future);
@@ -253,9 +258,9 @@ public final class NettyRequestSender {
         // some headers are only set when performing the first request
         HttpHeaders headers = future.getNettyRequest().getHttpRequest().headers();
         Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
-        HttpMethod method = future.getNettyRequest().getHttpRequest().getMethod();
-        requestFactory.addAuthorizationHeader(headers, requestFactory.firstRequestOnlyAuthorizationHeader(request, uri, proxy, realm));
-        requestFactory.setProxyAuthorizationHeader(headers, requestFactory.firstRequestOnlyProxyAuthorizationHeader(request, proxy, method));
+        boolean connect = future.getNettyRequest().getHttpRequest().getMethod() == HttpMethod.CONNECT;
+        requestFactory.addAuthorizationHeader(headers, perConnectionAuthorizationHeader(request, uri, proxy, realm));
+        requestFactory.setProxyAuthorizationHeader(headers, perConnectionProxyAuthorizationHeader(request, proxy, connect));
 
         // Do not throw an exception when we need an extra connection for a
         // redirect
@@ -263,17 +268,12 @@ public final class NettyRequestSender {
         ClientBootstrap bootstrap = channelManager.getBootstrap(request.getUri().getScheme(), useProxy, useSSl);
 
         boolean channelPreempted = false;
-        String poolKey = null;
+        Object partitionKey = future.getPartitionKey();
 
         try {
             // Do not throw an exception when we need an extra connection for a redirect.
             if (!reclaimCache) {
-                // only compute when maxConnectionPerHost is enabled
-                // FIXME clean up
-                if (config.getMaxConnectionsPerHost() > 0)
-                    poolKey = channelManager.getPartitionId(future);
-                channelManager.preemptChannel(poolKey);
-
+                channelManager.preemptChannel(partitionKey);
                 channelPreempted = true;
             }
 
@@ -281,11 +281,11 @@ public final class NettyRequestSender {
                 AsyncHandlerExtensions.class.cast(asyncHandler).onOpenConnection();
 
             ChannelFuture channelFuture = connect(request, uri, proxy, useProxy, bootstrap, asyncHandler);
-            channelFuture.addListener(new NettyConnectListener<T>(config, future, this, channelManager, channelPreempted, poolKey));
+            channelFuture.addListener(new NettyConnectListener<T>(future, this, channelManager, channelPreempted, partitionKey));
 
         } catch (Throwable t) {
             if (channelPreempted)
-                channelManager.abortChannelPreemption(poolKey);
+                channelManager.abortChannelPreemption(partitionKey);
 
             abort(null, future, t.getCause() == null ? t : t.getCause());
         }
@@ -296,7 +296,7 @@ public final class NettyRequestSender {
     private <T> NettyResponseFuture<T> newNettyResponseFuture(Uri uri, Request request, AsyncHandler<T> asyncHandler,
             NettyRequest nettyRequest, ProxyServer proxyServer) {
 
-        NettyResponseFuture<T> future = new NettyResponseFuture<T>(//
+        NettyResponseFuture<T> future = new NettyResponseFuture<>(//
                 uri,//
                 request,//
                 asyncHandler,//
@@ -333,9 +333,7 @@ public final class NettyRequestSender {
                 channel.write(httpRequest).addListener(new ProgressListener(config, future.getAsyncHandler(), future, true));
             }
 
-            // FIXME what happens to this second write if the first one failed? Should it be done in the ProgressListener?
-            if (!future.isDontWriteBodyBecauseExpectContinue() && !httpRequest.getMethod().equals(HttpMethod.CONNECT)
-                    && nettyRequest.getBody() != null)
+            if (nettyRequest.getBody() != null && !future.isDontWriteBodyBecauseExpectContinue() && httpRequest.getMethod() != HttpMethod.CONNECT)
                 nettyRequest.getBody().write(channel, future, config);
 
             // don't bother scheduling timeouts if channel became invalid
@@ -348,22 +346,30 @@ public final class NettyRequestSender {
         }
     }
 
-    private InetSocketAddress remoteAddress(Request request, Uri uri, ProxyServer proxy, boolean useProxy) {
-        if (request.getInetAddress() != null)
-            return new InetSocketAddress(request.getInetAddress(), getDefaultPort(uri));
+    private InetSocketAddress remoteAddress(Request request, Uri uri, ProxyServer proxy, boolean useProxy) throws UnknownHostException {
 
-        else if (!useProxy || avoidProxy(proxy, uri.getHost()))
-            return new InetSocketAddress(uri.getHost(), getDefaultPort(uri));
+        InetAddress address;
+        int port = getDefaultPort(uri);
 
-        else
-            return new InetSocketAddress(proxy.getHost(), proxy.getPort());
+        if (request.getInetAddress() != null) {
+            address = request.getInetAddress();
+
+        } else if (!useProxy || avoidProxy(proxy, uri.getHost())) {
+            address = request.getNameResolver().resolve(uri.getHost());
+
+        } else {
+            address = request.getNameResolver().resolve(proxy.getHost());
+            port = proxy.getPort();
+        }
+
+        return new InetSocketAddress(address, port);
     }
 
-    private ChannelFuture connect(Request request, Uri uri, ProxyServer proxy, boolean useProxy, ClientBootstrap bootstrap, AsyncHandler<?> asyncHandler) {
+    private ChannelFuture connect(Request request, Uri uri, ProxyServer proxy, boolean useProxy, ClientBootstrap bootstrap, AsyncHandler<?> asyncHandler) throws UnknownHostException {
         InetSocketAddress remoteAddress = remoteAddress(request, uri, proxy, useProxy);
 
         if (asyncHandler instanceof AsyncHandlerExtensions)
-            AsyncHandlerExtensions.class.cast(asyncHandler).onDnsResolved();
+            AsyncHandlerExtensions.class.cast(asyncHandler).onDnsResolved(remoteAddress.getAddress());
 
         if (request.getLocalAddress() != null)
             return bootstrap.connect(remoteAddress, new InetSocketAddress(request.getLocalAddress(), 0));
@@ -483,12 +489,19 @@ public final class NettyRequestSender {
         return replayed;
     }
 
-    public <T> void sendNextRequest(final Request request, final NettyResponseFuture<T> future) throws IOException {
+    public <T> void sendNextRequest(Request request, NettyResponseFuture<T> future) throws IOException {
         sendRequest(request, future.getAsyncHandler(), future, true);
     }
 
-    private boolean validateWebSocketRequest(Request request, AsyncHandler<?> asyncHandler) {
-        return request.getMethod().equals(HttpMethod.GET.getName()) && asyncHandler instanceof WebSocketUpgradeHandler;
+    private void validateWebSocketRequest(Request request, Uri uri, AsyncHandler<?> asyncHandler) {
+        if (asyncHandler instanceof WebSocketUpgradeHandler) {
+            if (!uri.getScheme().startsWith(WEBSOCKET))
+                throw new IllegalArgumentException("WebSocketUpgradeHandler but scheme isn't ws or wss: " + uri.getScheme());
+            else if (!request.getMethod().equals(HttpMethod.GET.getName()))
+                throw new IllegalArgumentException("WebSocketUpgradeHandler but method isn't GET: " + request.getMethod());
+        } else if (uri.getScheme().startsWith(WEBSOCKET)) {
+            throw new IllegalArgumentException("No WebSocketUpgradeHandler but scheme is " + uri.getScheme());
+        }
     }
 
     public Channel pollAndVerifyCachedChannel(Uri uri, ProxyServer proxy, ConnectionPoolPartitioning connectionPoolPartitioning, AsyncHandler<?> asyncHandler) {

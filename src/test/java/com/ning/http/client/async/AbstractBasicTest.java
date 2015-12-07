@@ -153,17 +153,9 @@ public abstract class AbstractBasicTest {
     }
 
     protected int findFreePort() throws IOException {
-        ServerSocket socket = null;
 
-        try {
-            socket = new ServerSocket(0);
-
+        try (ServerSocket socket = new ServerSocket(0)){
             return socket.getLocalPort();
-        }
-        finally {
-            if (socket != null) {
-                socket.close();
-            }
         }
     }
 
@@ -205,7 +197,6 @@ public abstract class AbstractBasicTest {
     }
 
     public static class AsyncCompletionHandlerAdapter extends AsyncCompletionHandler<Response> {
-        public Runnable runnable;
 
         @Override
         public Response onCompleted(Response response) throws Exception {

@@ -33,7 +33,7 @@ public class MultipartBody implements RandomAccessBody {
     private final long contentLength;
     private final String contentType;
     private final List<Part> parts;
-    private final List<RandomAccessFile> pendingOpenFiles = new ArrayList<RandomAccessFile>();
+    private final List<RandomAccessFile> pendingOpenFiles = new ArrayList<>();
 
     private boolean transfertDone = false;
 
@@ -76,11 +76,11 @@ public class MultipartBody implements RandomAccessBody {
     // RandomAccessBody API, suited for HTTP but not for HTTPS
     public long transferTo(long position, WritableByteChannel target) throws IOException {
 
-        long overallLength = 0;
-
         if (transfertDone) {
-            return contentLength;
+            return -1;
         }
+
+        long overallLength = 0;
 
         for (Part part : parts) {
             overallLength += part.write(target, boundary);

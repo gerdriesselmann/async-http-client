@@ -16,7 +16,7 @@
  */
 package com.ning.http.client.async;
 
-import static org.testng.Assert.*;
+import static org.testng.Assert.assertEquals;
 
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Server;
@@ -41,7 +41,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
 
@@ -52,16 +52,15 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
 
         String[] urls = new String[] { servletEndpointUri.toString(), servletEndpointUri.toString() };
 
-        final AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setConnectTimeout(1000).setRequestTimeout(5000).setAllowPoolingConnections(true)//
-                .setMaxConnections(1).setMaxConnectionsPerHost(1).build());
+        AsyncHttpClientConfig config = new AsyncHttpClientConfig.Builder().setConnectTimeout(1000).setRequestTimeout(5000).setAllowPoolingConnections(true)//
+                .setMaxConnections(1).setMaxConnectionsPerHost(1).build();
 
         final CountDownLatch inThreadsLatch = new CountDownLatch(2);
-        final AtomicReference<Integer> failedRank = new AtomicReference<Integer>(-1);
+        final AtomicInteger failedCount = new AtomicInteger();
         
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(config)) {
             for (int i = 0; i < urls.length; i++) {
                 final String url = urls[i];
-                final int rank = i;
                 Thread t = new Thread() {
                     public void run() {
                         client.prepareGet(url).execute(new AsyncCompletionHandlerBase() {
@@ -75,7 +74,7 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
                             @Override
                             public void onThrowable(Throwable t) {
                                 super.onThrowable(t);
-                                failedRank.set(rank);
+                                failedCount.incrementAndGet();
                                 inThreadsLatch.countDown();
                             }
                         });
@@ -86,10 +85,10 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
 
             inThreadsLatch.await();
 
-            assertEquals(failedRank.get().intValue(), 1, "Max Connections should have been reached");
+            assertEquals(failedCount.get(), 1, "Max Connections should have been reached when launching from concurrent threads");
 
             final CountDownLatch notInThreadsLatch = new CountDownLatch(2);
-            failedRank.set(-1);
+            failedCount.set(0);
             for (int i = 0; i < urls.length; i++) {
                 final String url = urls[i];
                 final int rank = i;
@@ -104,7 +103,7 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
                     @Override
                     public void onThrowable(Throwable t) {
                         super.onThrowable(t);
-                        failedRank.set(rank);
+                        failedCount.set(rank);
                         notInThreadsLatch.countDown();
                     }
                 });
@@ -112,9 +111,7 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
             
             notInThreadsLatch.await();
             
-            assertEquals(failedRank.get().intValue(), 1, "Max Connections should have been reached");
-        } finally {
-            client.close();
+            assertEquals(failedCount.get(), 1, "Max Connections should have been reached when launching from main thread");
         }
     }
 
@@ -188,12 +185,9 @@ abstract public class MaxConnectionsInThreads extends AbstractBasicTest {
             res.setHeader("XXX", "TripleX");
 
             byte[] retVal = "1".getBytes();
-            OutputStream os = res.getOutputStream();
-            try {
+            try (OutputStream os = res.getOutputStream()) {
                 res.setContentLength(retVal.length);
                 os.write(retVal);
-            } finally {
-                os.close();
             }
         }
     }

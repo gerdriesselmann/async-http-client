@@ -16,8 +16,8 @@
  */
 package com.ning.http.client.oauth;
 
-import static java.nio.charset.StandardCharsets.*;
 import static com.ning.http.util.MiscUtils.isNonEmpty;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.ning.http.client.Param;
 import com.ning.http.client.Request;
@@ -28,10 +28,11 @@ import com.ning.http.util.Base64;
 import com.ning.http.util.StringUtils;
 import com.ning.http.util.UTF8UrlEncoder;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Simple OAuth signature calculator that can used for constructing client signatures
@@ -57,13 +58,11 @@ public class OAuthSignatureCalculator implements SignatureCalculator {
     private static final String OAUTH_VERSION_1_0 = "1.0";
     private static final String OAUTH_SIGNATURE_METHOD = "HMAC-SHA1";
 
-    /**
-     * To generate Nonce, need some (pseudo)randomness; no need for
-     * secure variant here.
-     */
-    protected final Random random;
-
-    protected final byte[] nonceBuffer = new byte[16];
+    protected static final ThreadLocal<byte[]> NONCE_BUFFER = new ThreadLocal<byte[]>() {
+        protected byte[] initialValue() {
+            return new byte[16];
+        }
+    };
 
     protected final ThreadSafeHMAC mac;
 
@@ -79,81 +78,108 @@ public class OAuthSignatureCalculator implements SignatureCalculator {
         mac = new ThreadSafeHMAC(consumerAuth, userAuth);
         this.consumerAuth = consumerAuth;
         this.userAuth = userAuth;
-        random = new Random(System.identityHashCode(this) + System.currentTimeMillis());
     }
 
     @Override
     public void calculateAndAddSignature(Request request, RequestBuilderBase<?> requestBuilder) {
         String nonce = generateNonce();
-        long timestamp = System.currentTimeMillis() / 1000L;
+        long timestamp = generateTimestamp();
         String signature = calculateSignature(request.getMethod(), request.getUri(), timestamp, nonce, request.getFormParams(), request.getQueryParams());
         String headerValue = constructAuthHeader(signature, nonce, timestamp);
         requestBuilder.setHeader(HEADER_AUTHORIZATION, headerValue);
     }
 
-    /**
-     * Method for calculating OAuth signature using HMAC/SHA-1 method.
-     */
-    public String calculateSignature(String method, Uri uri, long oauthTimestamp, String nonce,
-                                     List<Param> formParams, List<Param> queryParams) {
-        StringBuilder signedText = StringUtils.stringBuilder();
-        signedText.append(method); // POST / GET etc (nothing to URL encode)
-        signedText.append('&');
-
+    private String baseUrl(Uri uri) {
         /* 07-Oct-2010, tatu: URL may contain default port number; if so, need to extract
          *   from base URL.
          */
         String scheme = uri.getScheme();
+
+        StringBuilder sb = StringUtils.stringBuilder();
+        sb.append(scheme).append("://").append(uri.getHost());
+        
         int port = uri.getPort();
-        if (scheme.equals("http"))
+        if (scheme.equals("http")) {
             if (port == 80)
                 port = -1;
-        else if (scheme.equals("https"))
+        } else if (scheme.equals("https")) {
             if (port == 443)
                 port = -1;
-        
-        StringBuilder sb = new StringBuilder().append(scheme).append("://").append(uri.getHost());
+        }
+
         if (port != -1)
             sb.append(':').append(port);
+
         if (isNonEmpty(uri.getPath()))
             sb.append(uri.getPath());
         
-        String baseURL = sb.toString();
-        UTF8UrlEncoder.appendEncoded(signedText, baseURL);
+        return sb.toString();
+    }
 
+    private String encodedParams(long oauthTimestamp, String nonce, List<Param> formParams, List<Param> queryParams) {
         /**
          * List of all query and form parameters added to this request; needed
          * for calculating request signature
          */
-        OAuthParameterSet allParameters = new OAuthParameterSet();
+        int allParametersSize = 5
+                + (userAuth.getKey() != null ? 1 : 0)
+                + (formParams != null ? formParams.size() : 0)
+                + (queryParams != null ? queryParams.size() : 0);
+        OAuthParameterSet allParameters = new OAuthParameterSet(allParametersSize);
 
         // start with standard OAuth parameters we need
-        allParameters.add(KEY_OAUTH_CONSUMER_KEY, consumerAuth.getKey());
-        allParameters.add(KEY_OAUTH_NONCE, nonce);
+        allParameters.add(KEY_OAUTH_CONSUMER_KEY, UTF8UrlEncoder.encodeQueryElement(consumerAuth.getKey()));
+        allParameters.add(KEY_OAUTH_NONCE, UTF8UrlEncoder.encodeQueryElement(nonce));
         allParameters.add(KEY_OAUTH_SIGNATURE_METHOD, OAUTH_SIGNATURE_METHOD);
         allParameters.add(KEY_OAUTH_TIMESTAMP, String.valueOf(oauthTimestamp));
         if (userAuth.getKey() != null) {
-            allParameters.add(KEY_OAUTH_TOKEN, userAuth.getKey());
+            allParameters.add(KEY_OAUTH_TOKEN, UTF8UrlEncoder.encodeQueryElement(userAuth.getKey()));
         }
         allParameters.add(KEY_OAUTH_VERSION, OAUTH_VERSION_1_0);
 
         if (formParams != null) {
             for (Param param : formParams) {
-                allParameters.add(param.getName(), param.getValue());
+                // formParams are not already encoded
+                allParameters.add(UTF8UrlEncoder.encodeQueryElement(param.getName()), UTF8UrlEncoder.encodeQueryElement(param.getValue()));
             }
         }
         if (queryParams != null) {
             for (Param param : queryParams) {
+             // queryParams are already encoded
                 allParameters.add(param.getName(), param.getValue());
             }
         }
-        String encodedParams = allParameters.sortAndConcat();
+        return allParameters.sortAndConcat();
+    }
+
+    StringBuilder signatureBaseString(String method, Uri uri, long oauthTimestamp, String nonce,
+                                     List<Param> formParams, List<Param> queryParams) {
+        
+        // beware: must generate first as we're using pooled StringBuilder
+        String baseUrl = baseUrl(uri);
+        String encodedParams = encodedParams(oauthTimestamp, nonce, formParams, queryParams);
+
+        StringBuilder sb = StringUtils.stringBuilder();
+        sb.append(method); // POST / GET etc (nothing to URL encode)
+        sb.append('&');
+        UTF8UrlEncoder.encodeAndAppendQueryElement(sb, baseUrl);
+
 
         // and all that needs to be URL encoded (... again!)
-        signedText.append('&');
-        UTF8UrlEncoder.appendEncoded(signedText, encodedParams);
+        sb.append('&');
+        UTF8UrlEncoder.encodeAndAppendQueryElement(sb, encodedParams);
+        return sb;
+    }
+    
+    /**
+     * Method for calculating OAuth signature using HMAC/SHA-1 method.
+     */
+    public String calculateSignature(String method, Uri uri, long oauthTimestamp, String nonce,
+                                     List<Param> formParams, List<Param> queryParams) {
 
-        byte[] rawBase = signedText.toString().getBytes(UTF_8);
+        StringBuilder sb = signatureBaseString(method, uri, oauthTimestamp, nonce, formParams, queryParams);
+
+        ByteBuffer rawBase = StringUtils.charSequence2ByteBuffer(sb, UTF_8);
         byte[] rawSignature = mac.digest(rawBase);
         // and finally, base64 encoded... phew!
         return Base64.encode(rawSignature);
@@ -162,7 +188,7 @@ public class OAuthSignatureCalculator implements SignatureCalculator {
     /**
      * Method used for constructing
      */
-    public String constructAuthHeader(String signature, String nonce, long oauthTimestamp) {
+    private String constructAuthHeader(String signature, String nonce, long oauthTimestamp) {
         StringBuilder sb = StringUtils.stringBuilder();
         sb.append("OAuth ");
         sb.append(KEY_OAUTH_CONSUMER_KEY).append("=\"").append(consumerAuth.getKey()).append("\", ");
@@ -173,20 +199,25 @@ public class OAuthSignatureCalculator implements SignatureCalculator {
 
         // careful: base64 has chars that need URL encoding:
         sb.append(KEY_OAUTH_SIGNATURE).append("=\"");
-        UTF8UrlEncoder.appendEncoded(sb, signature).append("\", ");
+        UTF8UrlEncoder.encodeAndAppendQueryElement(sb, signature).append("\", ");
         sb.append(KEY_OAUTH_TIMESTAMP).append("=\"").append(oauthTimestamp).append("\", ");
 
         // also: nonce may contain things that need URL encoding (esp. when using base64):
         sb.append(KEY_OAUTH_NONCE).append("=\"");
-        UTF8UrlEncoder.appendEncoded(sb, nonce);
+        UTF8UrlEncoder.encodeAndAppendQueryElement(sb, nonce);
         sb.append("\", ");
 
         sb.append(KEY_OAUTH_VERSION).append("=\"").append(OAUTH_VERSION_1_0).append("\"");
         return sb.toString();
     }
 
-    private synchronized String generateNonce() {
-        random.nextBytes(nonceBuffer);
+    protected long generateTimestamp() {
+        return System.currentTimeMillis() / 1000L;
+    }
+
+    protected String generateNonce() {
+        byte[] nonceBuffer = NONCE_BUFFER.get();
+        ThreadLocalRandom.current().nextBytes(nonceBuffer);
         // let's use base64 encoding over hex, slightly more compact than hex or decimals
         return Base64.encode(nonceBuffer);
 //      return String.valueOf(Math.abs(random.nextLong()));
@@ -201,14 +232,14 @@ public class OAuthSignatureCalculator implements SignatureCalculator {
      * when it would occur it'd be harder to track down.
      */
     final static class OAuthParameterSet {
-        final private ArrayList<Parameter> allParameters = new ArrayList<Parameter>();
+        private final ArrayList<Parameter> allParameters;
 
-        public OAuthParameterSet() {
+        public OAuthParameterSet(int size) {
+            allParameters = new ArrayList<>(size);
         }
 
         public OAuthParameterSet add(String key, String value) {
-            Parameter p = new Parameter(UTF8UrlEncoder.encode(key), UTF8UrlEncoder.encode(value));
-            allParameters.add(p);
+            allParameters.add(new Parameter(key, value));
             return this;
         }
 

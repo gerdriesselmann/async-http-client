@@ -49,7 +49,7 @@ public class ProxyServer {
         }
     }
 
-    private final List<String> nonProxyHosts = new ArrayList<String>();
+    private final List<String> nonProxyHosts = new ArrayList<>();
     private final Protocol protocol;
     private final String host;
     private final String principal;
@@ -60,6 +60,7 @@ public class ProxyServer {
     private String ntlmDomain = System.getProperty("http.auth.ntlm.domain", "");
     private String ntlmHost;
     private AuthScheme scheme = AuthScheme.BASIC;
+    private boolean forceHttp10 = false;
 
     public ProxyServer(final Protocol protocol, final String host, final int port, String principal, String password) {
         this.protocol = protocol;
@@ -162,6 +163,14 @@ public class ProxyServer {
 
     public String getUrl() {
         return url;
+    }
+    
+    public boolean isForceHttp10() {
+        return forceHttp10;
+    }
+
+    public void setForceHttp10(boolean forceHttp10) {
+        this.forceHttp10 = forceHttp10;
     }
 
     @Override

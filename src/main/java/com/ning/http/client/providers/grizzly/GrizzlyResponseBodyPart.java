@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2012-2015 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -13,9 +13,6 @@
 
 package com.ning.http.client.providers.grizzly;
 
-import static com.ning.http.client.providers.grizzly.GrizzlyAsyncHttpProvider.ConnectionManager.isConnectionCacheable;
-import static com.ning.http.client.providers.grizzly.GrizzlyAsyncHttpProvider.ConnectionManager.markConnectionAsDoNotCache;
-
 import org.glassfish.grizzly.Buffer;
 import org.glassfish.grizzly.Connection;
 import org.glassfish.grizzly.http.HttpContent;
@@ -26,6 +23,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicReference;
+
 
 /**
  * {@link HttpResponseBodyPart} implementation using the Grizzly 2.0 HTTP client
@@ -100,12 +98,12 @@ public class GrizzlyResponseBodyPart extends HttpResponseBodyPart {
 
     @Override
     public void markUnderlyingConnectionAsToBeClosed() {
-        markConnectionAsDoNotCache(connection);
+        content.getHttpHeader().getProcessingState().setKeepAlive(false);
     }
 
     @Override
     public boolean isUnderlyingConnectionToBeClosed() {
-        return !isConnectionCacheable(connection);
+        return content.getHttpHeader().getProcessingState().isStayAlive();
     }
 
     // ----------------------------------------------- Package Protected Methods

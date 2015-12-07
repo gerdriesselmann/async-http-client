@@ -13,9 +13,22 @@
  */
 package com.ning.http.client.providers.netty.handler;
 
-import static com.ning.http.client.providers.netty.ws.WebSocketUtils.getAcceptKey;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.SWITCHING_PROTOCOLS;
-
+import com.ning.http.client.AsyncHandler.STATE;
+import com.ning.http.client.AsyncHttpClientConfig;
+import com.ning.http.client.HttpResponseHeaders;
+import com.ning.http.client.HttpResponseStatus;
+import com.ning.http.client.Realm;
+import com.ning.http.client.Request;
+import com.ning.http.client.providers.netty.NettyAsyncHttpProviderConfig;
+import com.ning.http.client.providers.netty.channel.ChannelManager;
+import com.ning.http.client.providers.netty.channel.Channels;
+import com.ning.http.client.providers.netty.future.NettyResponseFuture;
+import com.ning.http.client.providers.netty.request.NettyRequestSender;
+import com.ning.http.client.providers.netty.response.NettyResponseBodyPart;
+import com.ning.http.client.providers.netty.response.NettyResponseHeaders;
+import com.ning.http.client.providers.netty.response.NettyResponseStatus;
+import com.ning.http.client.providers.netty.ws.NettyWebSocket;
+import com.ning.http.client.ws.WebSocketUpgradeHandler;
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.handler.codec.http.HttpChunk;
@@ -28,24 +41,11 @@ import org.jboss.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import org.jboss.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import org.jboss.netty.handler.codec.http.websocketx.WebSocketFrame;
 
-import com.ning.http.client.AsyncHandler.STATE;
-import com.ning.http.client.AsyncHttpClientConfig;
-import com.ning.http.client.HttpResponseHeaders;
-import com.ning.http.client.HttpResponseStatus;
-import com.ning.http.client.Request;
-import com.ning.http.client.providers.netty.NettyAsyncHttpProviderConfig;
-import com.ning.http.client.providers.netty.channel.ChannelManager;
-import com.ning.http.client.providers.netty.channel.Channels;
-import com.ning.http.client.providers.netty.future.NettyResponseFuture;
-import com.ning.http.client.providers.netty.request.NettyRequestSender;
-import com.ning.http.client.providers.netty.response.NettyResponseBodyPart;
-import com.ning.http.client.providers.netty.response.NettyResponseHeaders;
-import com.ning.http.client.providers.netty.response.NettyResponseStatus;
-import com.ning.http.client.providers.netty.ws.NettyWebSocket;
-import com.ning.http.client.ws.WebSocketUpgradeHandler;
-
 import java.io.IOException;
 import java.util.Locale;
+
+import static com.ning.http.client.providers.netty.ws.WebSocketUtils.getAcceptKey;
+import static org.jboss.netty.handler.codec.http.HttpResponseStatus.SWITCHING_PROTOCOLS;
 
 public final class WebSocketProtocol extends Protocol {
 
@@ -77,13 +77,14 @@ public final class WebSocketProtocol extends Protocol {
             HttpResponse response = (HttpResponse) e;
             HttpResponseStatus status = new NettyResponseStatus(future.getUri(), config, response);
             HttpResponseHeaders responseHeaders = new NettyResponseHeaders(response.headers());
+            Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
 
             if (exitAfterProcessingFilters(channel, future, handler, status, responseHeaders)) {
                 return;
             }
 
             future.setHttpHeaders(response.headers());
-            if (exitAfterHandlingRedirect(channel, future, response, request, response.getStatus().getCode()))
+            if (exitAfterHandlingRedirect(channel, future, response, request, response.getStatus().getCode(), realm))
                 return;
 
             boolean validStatus = response.getStatus().equals(SWITCHING_PROTOCOLS);
@@ -92,8 +93,6 @@ public final class WebSocketProtocol extends Protocol {
             if (connection == null)
                 connection = response.headers().get(HttpHeaders.Names.CONNECTION.toLowerCase(Locale.ENGLISH));
             boolean validConnection = HttpHeaders.Values.UPGRADE.equalsIgnoreCase(connection);
-
-            status = new NettyResponseStatus(future.getUri(), config, response);
             final boolean statusReceived = handler.onStatusReceived(status) == STATE.UPGRADE;
 
             if (!statusReceived) {
@@ -179,12 +178,14 @@ public final class WebSocketProtocol extends Protocol {
     public void onError(NettyResponseFuture<?> future, Throwable e) {
         logger.warn("onError {}", e);
 
+        Throwable throwable = e.getCause() == null ? e : e.getCause();
+
         try {
             WebSocketUpgradeHandler h = (WebSocketUpgradeHandler) future.getAsyncHandler();
 
             NettyWebSocket webSocket = NettyWebSocket.class.cast(h.onCompleted());
             if (webSocket != null) {
-                webSocket.onError(e.getCause());
+                webSocket.onError(throwable);
                 webSocket.close();
             }
         } catch (Throwable t) {

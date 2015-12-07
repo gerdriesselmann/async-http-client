@@ -76,10 +76,10 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicGetTest() throws Throwable {
-        final AtomicReference<Throwable> throwable = new AtomicReference<Throwable>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<FluentCaseInsensitiveStringsMap>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<FluentCaseInsensitiveStringsMap>();
-        final AtomicReference<byte[]> bb = new AtomicReference<byte[]>();
+        final AtomicReference<Throwable> throwable = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<>();
+        final AtomicReference<byte[]> bb = new AtomicReference<>();
         final AtomicBoolean completed = new AtomicBoolean(false);
 
         TransferCompletionHandler tl = new TransferCompletionHandler();
@@ -109,8 +109,7 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             }
         });
 
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             Response response = client.prepareGet(getTargetUrl()).execute(tl).get();
 
             assertNotNull(response);
@@ -119,17 +118,15 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             assertNotNull(hSent.get());
             assertNotNull(bb.get());
             assertNull(throwable.get());
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicPutTest() throws Throwable {
 
-        final AtomicReference<Throwable> throwable = new AtomicReference<Throwable>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<FluentCaseInsensitiveStringsMap>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<FluentCaseInsensitiveStringsMap>();
+        final AtomicReference<Throwable> throwable = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<>();
         final AtomicLong bbReceivedLenght = new AtomicLong(0);
         final AtomicLong bbSentLenght = new AtomicLong(0);
 
@@ -167,8 +164,7 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             }
         });
 
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             Response response = client.preparePut(getTargetUrl()).setBody(largeFile).execute(tl).get();
 
             assertNotNull(response);
@@ -177,17 +173,15 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             assertNotNull(hSent.get());
             assertEquals(bbReceivedLenght.get(), largeFile.length());
             assertEquals(bbSentLenght.get(), largeFile.length());
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicPutBodyTest() throws Throwable {
 
-        final AtomicReference<Throwable> throwable = new AtomicReference<Throwable>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<FluentCaseInsensitiveStringsMap>();
-        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<FluentCaseInsensitiveStringsMap>();
+        final AtomicReference<Throwable> throwable = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hSent = new AtomicReference<>();
+        final AtomicReference<FluentCaseInsensitiveStringsMap> hRead = new AtomicReference<>();
         final AtomicLong bbReceivedLenght = new AtomicLong(0);
         final AtomicLong bbSentLenght = new AtomicLong(0);
 
@@ -225,8 +219,7 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             }
         });
 
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             Response response = client.preparePut(getTargetUrl()).setBody(new FileBodyGenerator(largeFile)).execute(tl).get();
 
             assertNotNull(response);
@@ -235,8 +228,6 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
             assertNotNull(hSent.get());
             assertEquals(bbReceivedLenght.get(), largeFile.length());
             assertEquals(bbSentLenght.get(), largeFile.length());
-        } finally {
-            client.close();
         }
     }
 
@@ -256,15 +247,9 @@ public abstract class TransferListenerTest extends AbstractBasicTest {
     public static void write(byte[] pattern, int repeat, File file) throws IOException {
         file.deleteOnExit();
         file.getParentFile().mkdirs();
-        FileOutputStream out = null;
-        try {
-            out = new FileOutputStream(file);
+        try (FileOutputStream out = new FileOutputStream(file)) {
             for (int i = 0; i < repeat; i++) {
                 out.write(pattern);
-            }
-        } finally {
-            if (out != null) {
-                out.close();
             }
         }
     }

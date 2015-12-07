@@ -12,11 +12,16 @@
  */
 package com.ning.http.client.multipart;
 
-import static java.nio.charset.StandardCharsets.*;
+import static com.ning.http.util.MiscUtils.isNonEmpty;
+import static java.nio.charset.StandardCharsets.US_ASCII;
+
+import com.ning.http.client.Param;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.List;
 
 public abstract class PartBase implements Part {
 
@@ -49,6 +54,11 @@ public abstract class PartBase implements Part {
      * The disposition type (part of Content-Disposition)
      */
     private String dispositionType;
+
+    /**
+     * Additional part headers
+     */
+    private List<Param> customHeaders;
 
     public PartBase(String name, String contentType, Charset charset, String contentId) {
         this(name, contentType, charset, contentId, null);
@@ -120,7 +130,17 @@ public abstract class PartBase implements Part {
         }
     }
 
-    protected void visitEndOfHeader(PartVisitor visitor) throws IOException {
+    protected void visitCustomHeaders(PartVisitor visitor) throws IOException {
+        if (isNonEmpty(customHeaders)) {
+            for (Param param: customHeaders) {
+                visitor.withBytes(CRLF_BYTES);
+                visitor.withBytes(param.getName().getBytes(US_ASCII));
+                visitor.withBytes(param.getValue().getBytes(US_ASCII));
+            }
+        }
+    }
+
+    protected void visitEndOfHeaders(PartVisitor visitor) throws IOException {
         visitor.withBytes(CRLF_BYTES);
         visitor.withBytes(CRLF_BYTES);
     }
@@ -152,7 +172,8 @@ public abstract class PartBase implements Part {
         visitContentTypeHeader(visitor);
         visitTransferEncodingHeader(visitor);
         visitContentIdHeader(visitor);
-        visitEndOfHeader(visitor);
+        visitCustomHeaders(visitor);
+        visitEndOfHeaders(visitor);
         sendData(visitor.getOutputStream());
         visitEnd(visitor);
     }
@@ -176,7 +197,8 @@ public abstract class PartBase implements Part {
                 visitContentTypeHeader(visitor);
                 visitTransferEncodingHeader(visitor);
                 visitContentIdHeader(visitor);
-                visitEndOfHeader(visitor);
+                visitCustomHeaders(visitor);
+                visitEndOfHeaders(visitor);
                 visitEnd(visitor);
                 return dataLength + visitor.getCount();
             }
@@ -230,5 +252,16 @@ public abstract class PartBase implements Part {
 
     public void setDispositionType(String dispositionType) {
         this.dispositionType = dispositionType;
+    }
+
+    public void addCustomHeader(String name, String value) {
+        if (customHeaders == null) {
+            customHeaders = new ArrayList<Param>(2);
+        }
+        customHeaders.add(new Param(name, value));
+    }
+
+    public void setCustomHeaders(List<Param> customHeaders) {
+        this.customHeaders = customHeaders;
     }
 }

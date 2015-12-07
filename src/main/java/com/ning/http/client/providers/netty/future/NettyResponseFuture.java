@@ -69,12 +69,12 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
     private final AtomicBoolean inAuth = new AtomicBoolean(false);
     private final AtomicBoolean statusReceived = new AtomicBoolean(false);
     private final AtomicLong touch = new AtomicLong(millisTime());
-    private final AtomicReference<STATE> state = new AtomicReference<STATE>(STATE.NEW);
+    private final AtomicReference<STATE> state = new AtomicReference<>(STATE.NEW);
     private final AtomicBoolean contentProcessed = new AtomicBoolean(false);
     private final AtomicInteger currentRetry = new AtomicInteger(0);
     private final AtomicBoolean onThrowableCalled = new AtomicBoolean(false);
-    private final AtomicReference<V> content = new AtomicReference<V>();
-    private final AtomicReference<ExecutionException> exEx = new AtomicReference<ExecutionException>();
+    private final AtomicReference<V> content = new AtomicReference<>();
+    private final AtomicReference<ExecutionException> exEx = new AtomicReference<>();
     private volatile TimeoutsHolder timeoutsHolder;
 
     // state mutated only inside the event loop
@@ -200,6 +200,8 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
 
     private boolean terminateAndExit() {
         cancelTimeouts();
+        this.channel = null;
+        this.reuseChannel = false;
         return isDone.getAndSet(true) || isCancelled.get();
     }
 
@@ -226,10 +228,11 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
 
     public final void abort(final Throwable t) {
 
+        exEx.compareAndSet(null, new ExecutionException(t));
+
         if (terminateAndExit())
             return;
 
-        exEx.compareAndSet(null, new ExecutionException(t));
         if (onThrowableCalled.compareAndSet(false, true)) {
             try {
                 asyncHandler.onThrowable(t);
@@ -421,6 +424,10 @@ public final class NettyResponseFuture<V> extends AbstractListenableFuture<V> {
 
     public long getStart() {
         return start;
+    }
+
+    public Object getPartitionKey() {
+        return connectionPoolPartitioning.getPartitionKey(uri, proxyServer);
     }
 
     @Override
