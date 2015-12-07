@@ -142,21 +142,22 @@ public final class NettyRequestFactory {
             // don't override authorization but append
             headers.add(HttpHeaders.Names.AUTHORIZATION, authorizationHeader);
     }
-    
+
     public void setProxyAuthorizationHeader(HttpHeaders headers, String proxyAuthorizationHeader) {
         if (proxyAuthorizationHeader != null)
             headers.set(HttpHeaders.Names.PROXY_AUTHORIZATION, proxyAuthorizationHeader);
     }
-    
+
     public NettyRequest newNettyRequest(Request request, Uri uri, boolean forceConnect, ProxyServer proxyServer)
             throws IOException {
 
         HttpMethod method = forceConnect ? HttpMethod.CONNECT : HttpMethod.valueOf(request.getMethod());
         boolean connect = method == HttpMethod.CONNECT;
-        
+
         boolean allowConnectionPooling = config.isAllowPoolingConnections() && (!isSecure(uri) || config.isAllowPoolingSslConnections());
-        
-        HttpVersion httpVersion = !allowConnectionPooling || (connect && proxyServer.isForceHttp10()) ? HttpVersion.HTTP_1_0 : HttpVersion.HTTP_1_1;
+
+        //HttpVersion httpVersion = !allowConnectionPooling || (connect && proxyServer.isForceHttp10()) ? HttpVersion.HTTP_1_0 : HttpVersion.HTTP_1_1;
+        HttpVersion httpVersion = (connect && proxyServer.isForceHttp10()) ? HttpVersion.HTTP_1_0 : HttpVersion.HTTP_1_1;
         String requestUri = requestUri(uri, proxyServer, connect);
 
         NettyBody body = body(request, connect);
