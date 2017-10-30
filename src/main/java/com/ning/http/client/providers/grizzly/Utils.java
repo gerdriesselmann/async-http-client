@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2013-2015 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -14,8 +14,16 @@
 package com.ning.http.client.providers.grizzly;
 
 import com.ning.http.client.uri.Uri;
+import org.glassfish.grizzly.Connection;
+import org.glassfish.grizzly.Grizzly;
+import org.glassfish.grizzly.attributes.Attribute;
 
 public class Utils {
+    private static class NTLM_HOLDER {
+        private static final Attribute<Boolean> IS_NTLM_DONE =
+                Grizzly.DEFAULT_ATTRIBUTE_BUILDER.createAttribute(
+                        "com.ning.http.client.providers.grizzly.ntlm-done");
+    }
     // ------------------------------------------------------------ Constructors
 
     private Utils() {
@@ -23,6 +31,24 @@ public class Utils {
 
     // ---------------------------------------------------------- Public Methods
 
+    public static boolean getAndSetNtlmAttempted(final Connection c) {
+        final Boolean v = NTLM_HOLDER.IS_NTLM_DONE.get(c);
+        if (v == null) {
+            NTLM_HOLDER.IS_NTLM_DONE.set(c, Boolean.TRUE);
+            return false;
+        }
+        
+        return true;
+    }
+    
+    public static void setNtlmEstablished(final Connection c) {
+        NTLM_HOLDER.IS_NTLM_DONE.set(c, Boolean.TRUE);
+    }
+
+    public static boolean isNtlmEstablished(final Connection c) {
+        return Boolean.TRUE.equals(NTLM_HOLDER.IS_NTLM_DONE.get(c));
+    }
+    
     public static boolean isSecure(final String uri) {
         return (uri.startsWith("https") || uri.startsWith("wss"));
     }

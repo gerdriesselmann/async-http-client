@@ -15,6 +15,8 @@
  */
 package com.ning.http.client.async;
 
+import static java.nio.charset.StandardCharsets.*;
+
 import com.ning.http.client.AsyncHandler;
 import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.AsyncHttpClientConfig;
@@ -24,7 +26,6 @@ import com.ning.http.client.HttpResponseStatus;
 import com.ning.http.client.Realm;
 import com.ning.http.client.Realm.AuthScheme;
 import com.ning.http.client.Response;
-import com.ning.http.client.generators.InputStreamBodyGenerator;
 
 import org.apache.log4j.ConsoleAppender;
 import org.apache.log4j.Level;
@@ -104,10 +105,10 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
         mapping.setConstraint(constraint);
         mapping.setPathSpec("/*");
 
-        List<ConstraintMapping> cm = new ArrayList<ConstraintMapping>();
+        List<ConstraintMapping> cm = new ArrayList<>();
         cm.add(mapping);
 
-        Set<String> knownRoles = new HashSet<String>();
+        Set<String> knownRoles = new HashSet<>();
         knownRoles.add(user);
         knownRoles.add(admin);
 
@@ -171,7 +172,7 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
         mapping.setConstraint(constraint);
         mapping.setPathSpec("/*");
 
-        Set<String> knownRoles = new HashSet<String>();
+        Set<String> knownRoles = new HashSet<>();
         knownRoles.add(user);
         knownRoles.add(admin);
 
@@ -186,7 +187,7 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             }
         };
 
-        List<ConstraintMapping> cm = new ArrayList<ConstraintMapping>();
+        List<ConstraintMapping> cm = new ArrayList<>();
         cm.add(mapping);
 
         security.setConstraintMappings(cm, knownRoles);
@@ -227,22 +228,22 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
 
             System.err.println("redirecthandler");
             System.err.println("request: " + request.getRequestURI());
-            if ("/uff".equals(request.getRequestURI())) {
 
+            if ("/uff".equals(request.getRequestURI())) {
                 System.err.println("redirect to /bla");
                 response.setStatus(302);
                 response.setHeader("Location", "/bla");
                 response.getOutputStream().flush();
                 response.getOutputStream().close();
 
-                return;
-
             } else {
                 System.err.println("got redirected" + request.getRequestURI());
+                response.setStatus(200);
                 response.addHeader("X-Auth", request.getHeader("Authorization"));
                 response.addHeader("X-Content-Length", String.valueOf(request.getContentLength()));
-                response.setStatus(200);
-                response.getOutputStream().write("content".getBytes("UTF-8"));
+                byte[] b = "content".getBytes(UTF_8);
+                response.setContentLength(b.length);
+                response.getOutputStream().write(b);
                 response.getOutputStream().flush();
                 response.getOutputStream().close();
             }
@@ -250,29 +251,32 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
     }
 
     private class SimpleHandler extends AbstractHandler {
+
         public void handle(String s, Request r, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
         	
             if (request.getHeader("X-401") != null) {
                 response.setStatus(401);
-                response.getOutputStream().flush();
-                response.getOutputStream().close();
+                response.setContentLength(0);
 
-                return;
-            }
-            response.addHeader("X-Auth", request.getHeader("Authorization"));
-            response.addHeader("X-Content-Length", String.valueOf(request.getContentLength()));
-            response.setStatus(200);
-
-            int size = 10 * 1024;
-            if (request.getContentLength() > 0) {
-                size = request.getContentLength();
-            }
-            byte[] bytes = new byte[size];
-            if (bytes.length > 0) {
-                int read = request.getInputStream().read(bytes);
-                if (read > 0) {
-                    response.getOutputStream().write(bytes, 0, read);
+            } else {
+                response.addHeader("X-Auth", request.getHeader("Authorization"));
+                response.addHeader("X-Content-Length", String.valueOf(request.getContentLength()));
+                response.setStatus(200);
+    
+                int size = 10 * 1024;
+                if (request.getContentLength() > 0) {
+                    size = request.getContentLength();
                 }
+                byte[] bytes = new byte[size];
+                int contentLength = 0;
+                if (bytes.length > 0) {
+                    int read = request.getInputStream().read(bytes);
+                    if (read > 0) {
+                        contentLength = read;
+                        response.getOutputStream().write(bytes, 0, read);
+                    }
+                }
+                response.setContentLength(contentLength);
             }
             response.getOutputStream().flush();
             response.getOutputStream().close();
@@ -281,8 +285,7 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthTest() throws IOException, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrl()).setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
 
             Future<Response> f = r.execute();
@@ -290,18 +293,14 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp);
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void redirectAndBasicAuthTest() throws Exception, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setFollowRedirect(true).setMaxRedirects(10).build());
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setFollowRedirect(true).setMaxRedirects(10).build())) {
             setUpSecondServer();
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrl2())
-            // .setHeader( "X-302", "/bla" )
                     .setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
 
             Future<Response> f = r.execute();
@@ -311,7 +310,6 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"), "X-Auth shouldn't be null");
 
         } finally {
-            client.close();
             stopSecondServer();
         }
     }
@@ -336,8 +334,7 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
 
     @Test(groups = { "standalone", "default_provider" })
     public void basic401Test() throws IOException, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrl()).setHeader("X-401", "401").setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
 
             Future<Integer> f = r.execute(new AsyncHandler<Integer>() {
@@ -372,15 +369,12 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             Integer statusCode = f.get(10, TimeUnit.SECONDS);
             assertNotNull(statusCode);
             assertEquals(statusCode.intValue(), 401);
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthTestPreemtiveTest() throws Exception, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             setUpServerNoAuth();
 
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrlNoAuth())
@@ -392,30 +386,25 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
         } finally {
-            client.close();
             stopServerNoAuth();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthNegativeTest() throws IOException, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrl()).setRealm((new Realm.RealmBuilder()).setPrincipal("fake").setPassword(admin).build());
 
             Future<Response> f = r.execute();
             Response resp = f.get(3, TimeUnit.SECONDS);
             assertNotNull(resp);
             assertEquals(resp.getStatusCode(), 401);
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthInputStreamTest() throws IOException, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             ByteArrayInputStream is = new ByteArrayInputStream("test".getBytes());
             AsyncHttpClient.BoundRequestBuilder r = client.preparePost(getTargetUrl()).setBody(is).setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
 
@@ -425,15 +414,12 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
             assertEquals(resp.getResponseBody(), "test");
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthFileTest() throws Throwable {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             ClassLoader cl = getClass().getClassLoader();
             // override system properties
             URL url = cl.getResource("SimpleTextFile.txt");
@@ -448,15 +434,12 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
             assertEquals(resp.getResponseBody(), fileContent);
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthAsyncConfigTest() throws Throwable {
-        AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build()).build());
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build()).build())) {
             ClassLoader cl = getClass().getClassLoader();
             // override system properties
             URL url = cl.getResource("SimpleTextFile.txt");
@@ -471,15 +454,12 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
             assertEquals(resp.getResponseBody(), fileContent);
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void basicAuthFileNoKeepAliveTest() throws Throwable {
-        AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setAllowPoolingConnections(false).build());
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(new AsyncHttpClientConfig.Builder().setAllowPoolingConnections(false).build())) {
             ClassLoader cl = getClass().getClassLoader();
             // override system properties
             URL url = cl.getResource("SimpleTextFile.txt");
@@ -494,37 +474,12 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
             assertEquals(resp.getResponseBody(), fileContent);
-        } finally {
-            client.close();
-        }
-    }
-
-    @Test(groups = { "standalone", "default_provider" })
-    public void stringBuilderBodyConsumerTest() throws Throwable {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        
-        try {
-            AsyncHttpClient.BoundRequestBuilder r = client.preparePost(getTargetUrl())
-                    .setHeader("Content-Type", "text/html")
-                    .setBody(new InputStreamBodyGenerator(new ByteArrayInputStream(MY_MESSAGE.getBytes())))
-                    .setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
-            Future<Response> f = r.execute();
-
-            System.out.println("waiting for response");
-            Response response = f.get();
-            assertEquals(response.getStatusCode(), 200);
-            assertEquals(response.getResponseBody(), MY_MESSAGE);
-            assertEquals(response.getStatusCode(), HttpServletResponse.SC_OK);
-            assertNotNull(response.getHeader("X-Auth"));
-        } finally {
-            client.close();
         }
     }
 
     @Test(groups = { "standalone", "default_provider" })
     public void noneAuthTest() throws IOException, ExecutionException, TimeoutException, InterruptedException {
-        AsyncHttpClient client = getAsyncHttpClient(null);
-        try {
+        try (AsyncHttpClient client = getAsyncHttpClient(null)) {
             AsyncHttpClient.BoundRequestBuilder r = client.prepareGet(getTargetUrl()).setRealm((new Realm.RealmBuilder()).setPrincipal(user).setPassword(admin).build());
 
             Future<Response> f = r.execute();
@@ -532,8 +487,6 @@ public abstract class BasicAuthTest extends AbstractBasicTest {
             assertNotNull(resp);
             assertNotNull(resp.getHeader("X-Auth"));
             assertEquals(resp.getStatusCode(), HttpServletResponse.SC_OK);
-        } finally {
-            client.close();
         }
     }
 }

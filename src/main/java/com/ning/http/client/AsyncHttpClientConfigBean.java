@@ -39,9 +39,9 @@ public class AsyncHttpClientConfigBean extends AsyncHttpClientConfig {
     }
 
     void configureFilters() {
-        requestFilters = new LinkedList<RequestFilter>();
-        responseFilters = new LinkedList<ResponseFilter>();
-        ioExceptionFilters = new LinkedList<IOExceptionFilter>();
+        requestFilters = new LinkedList<>();
+        responseFilters = new LinkedList<>();
+        ioExceptionFilters = new LinkedList<>();
     }
 
     void configureDefaults() {
@@ -63,9 +63,10 @@ public class AsyncHttpClientConfigBean extends AsyncHttpClientConfig {
         ioThreadMultiplier = defaultIoThreadMultiplier();
         allowPoolingSslConnections = defaultAllowPoolingSslConnections();
         disableUrlEncodingForBoundRequests = defaultDisableUrlEncodingForBoundRequests();
-        removeQueryParamOnRedirect = defaultRemoveQueryParamOnRedirect();
         strict302Handling = defaultStrict302Handling();
         acceptAnyCertificate = defaultAcceptAnyCertificate();
+        sslSessionCacheSize = defaultSslSessionCacheSize();
+        sslSessionTimeout = defaultSslSessionTimeout();
 
         if (defaultUseProxySelector()) {
             proxyServerSelector = ProxyUtils.getJdkDefaultProxyServerSelector();
@@ -212,11 +213,6 @@ public class AsyncHttpClientConfigBean extends AsyncHttpClientConfig {
         return this;
     }
 
-    public AsyncHttpClientConfigBean setRemoveQueryParamOnRedirect(boolean removeQueryParamOnRedirect) {
-        this.removeQueryParamOnRedirect = removeQueryParamOnRedirect;
-        return this;
-    }
-
     public AsyncHttpClientConfigBean setHostnameVerifier(HostnameVerifier hostnameVerifier) {
         this.hostnameVerifier = hostnameVerifier;
         return this;
@@ -229,6 +225,16 @@ public class AsyncHttpClientConfigBean extends AsyncHttpClientConfig {
 
     public AsyncHttpClientConfigBean setAcceptAnyCertificate(boolean acceptAnyCertificate) {
         this.acceptAnyCertificate = acceptAnyCertificate;
+        return this;
+    }
+
+    public AsyncHttpClientConfigBean setSslSessionCacheSize(Integer sslSessionCacheSize) {
+        this.sslSessionCacheSize = sslSessionCacheSize;
+        return this;
+    }
+
+    public AsyncHttpClientConfigBean setSslSessionTimeout(Integer sslSessionTimeout) {
+        this.sslSessionTimeout = sslSessionTimeout;
         return this;
     }
 }

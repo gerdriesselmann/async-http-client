@@ -68,7 +68,6 @@ import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
-import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
@@ -183,15 +182,11 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
 
         if (request.getUri().getScheme().equals("https")) {
             HttpsURLConnection secure = (HttpsURLConnection) urlConnection;
-            SSLContext sslContext = config.getSSLContext();
-            if (sslContext == null) {
-                try {
-                    sslContext = SslUtils.getInstance().getSSLContext(config.isAcceptAnyCertificate());
-                } catch (NoSuchAlgorithmException e) {
-                    throw new IOException(e.getMessage());
-                } catch (GeneralSecurityException e) {
-                    throw new IOException(e.getMessage());
-                }
+            SSLContext sslContext;
+            try {
+                sslContext = SslUtils.getInstance().getSSLContext(config);
+            } catch (GeneralSecurityException e) {
+                throw new IOException(e.getMessage());
             }
             secure.setSSLSocketFactory(sslContext.getSocketFactory());
             secure.setHostnameVerifier(config.getHostnameVerifier());
@@ -224,6 +219,7 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
         }
 
         public T call() throws Exception {
+            terminate = true;
             AsyncHandler.STATE state = AsyncHandler.STATE.ABORT;
             try {
                 Uri uri = request.getUri();
@@ -387,6 +383,7 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
                 } catch (Throwable t2) {
                     logger.error(t2.getMessage(), t2);
                 }
+                asyncHandler.onThrowable(t);
             } finally {
                 if (terminate) {
                     if (config.getMaxConnections() != -1) {
@@ -473,12 +470,12 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
                 }
             }
 
-            String ka = AsyncHttpProviderUtils.keepAliveHeaderValue(config);
-            urlConnection.setRequestProperty("Connection", ka);
+            String ka = AsyncHttpProviderUtils.connectionHeader(false, false);
+            if (ka != null)
+                urlConnection.setRequestProperty("Connection", ka);
             ProxyServer proxyServer = ProxyUtils.getProxyServer(config, request);
             boolean avoidProxy = ProxyUtils.avoidProxy(proxyServer, uri.getHost());
             if (!avoidProxy) {
-                urlConnection.setRequestProperty("Connection", ka);
                 if (proxyServer.getPrincipal() != null) {
                     urlConnection.setRequestProperty("Proxy-Authorization", AuthenticatorUtils.computeBasicAuthentication(proxyServer));
                 }
@@ -491,7 +488,7 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
 
             Realm realm = request.getRealm() != null ? request.getRealm() : config.getRealm();
             if (realm != null && realm.getUsePreemptiveAuth()) {
-                switch (realm.getAuthScheme()) {
+                switch (realm.getScheme()) {
                     case BASIC:
                         urlConnection.setRequestProperty("Authorization",
                                 AuthenticatorUtils.computeBasicAuthentication(realm));
@@ -562,7 +559,7 @@ public class JDKAsyncHttpProvider implements AsyncHttpProvider {
 
                     urlConnection.getOutputStream().write(cachedBytes, 0, cachedBytesLenght);
                 } else if (isNonEmpty(request.getFormParams())) {
-                    String formBody = AsyncHttpProviderUtils.formParams2UTF8String(request.getFormParams());
+                    String formBody = AsyncHttpProviderUtils.urlEncodeFormParams0(request.getFormParams()).toString();
                     urlConnection.setRequestProperty("Content-Length", String.valueOf(formBody.length()));
                     urlConnection.setFixedLengthStreamingMode(formBody.length());
 

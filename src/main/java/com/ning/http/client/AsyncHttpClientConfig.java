@@ -17,7 +17,6 @@ package com.ning.http.client;
 
 import static com.ning.http.client.AsyncHttpClientConfigDefaults.*;
 
-import com.ning.http.client.date.TimeConverter;
 import com.ning.http.client.filter.IOExceptionFilter;
 import com.ning.http.client.filter.RequestFilter;
 import com.ning.http.client.filter.ResponseFilter;
@@ -26,6 +25,7 @@ import com.ning.http.util.ProxyUtils;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
 
 import java.util.Collections;
 import java.util.LinkedList;
@@ -62,7 +62,6 @@ public class AsyncHttpClientConfig {
 
     protected boolean followRedirect;
     protected int maxRedirects;
-    protected boolean removeQueryParamOnRedirect;
     protected boolean strict302Handling;
 
     protected ProxyServerSelector proxyServerSelector;
@@ -78,9 +77,10 @@ public class AsyncHttpClientConfig {
     protected int maxRequestRetry;
     protected boolean disableUrlEncodingForBoundRequests;
     protected int ioThreadMultiplier;
-    protected TimeConverter timeConverter;
     protected String[] enabledProtocols;
     protected String[] enabledCipherSuites;
+    protected Integer sslSessionCacheSize;
+    protected Integer sslSessionTimeout;
     protected AsyncHttpProviderConfig<?, ?> providerConfig;
 
     protected AsyncHttpClientConfig() {
@@ -101,7 +101,6 @@ public class AsyncHttpClientConfig {
             boolean acceptAnyCertificate, //
             boolean followRedirect, //
             int maxRedirects, //
-            boolean removeQueryParamOnRedirect,//
             boolean strict302Handling, //
             ExecutorService applicationThreadPool,//
             ProxyServerSelector proxyServerSelector, //
@@ -115,9 +114,10 @@ public class AsyncHttpClientConfig {
             int maxRequestRetry, //
             boolean disableUrlEncodingForBoundedRequests, //
             int ioThreadMultiplier, //
-            TimeConverter timeConverter,//
             String[] enabledProtocols,//
             String[] enabledCipherSuites,//
+            Integer sslSessionCacheSize,//
+            Integer sslSessionTimeout,//
             AsyncHttpProviderConfig<?, ?> providerConfig) {
 
         this.connectTimeout = connectTimeout;
@@ -135,7 +135,6 @@ public class AsyncHttpClientConfig {
         this.acceptAnyCertificate = acceptAnyCertificate;
         this.followRedirect = followRedirect;
         this.maxRedirects = maxRedirects;
-        this.removeQueryParamOnRedirect = removeQueryParamOnRedirect;
         this.strict302Handling = strict302Handling;
         this.proxyServerSelector = proxyServerSelector;
         this.useRelativeURIsWithConnectProxies = useRelativeURIsWithConnectProxies;
@@ -149,9 +148,10 @@ public class AsyncHttpClientConfig {
         this.maxRequestRetry = maxRequestRetry;
         this.disableUrlEncodingForBoundRequests = disableUrlEncodingForBoundedRequests;
         this.ioThreadMultiplier = ioThreadMultiplier;
-        this.timeConverter = timeConverter;
         this.enabledProtocols = enabledProtocols;
         this.enabledCipherSuites = enabledCipherSuites;
+        this.sslSessionCacheSize = sslSessionCacheSize;
+        this.sslSessionTimeout = sslSessionTimeout;
         this.providerConfig = providerConfig;
     }
 
@@ -183,8 +183,8 @@ public class AsyncHttpClientConfig {
     }
 
     /**
-     * Return the maximum time, in milliseconds, a {@link com.ning.http.client.websocket.WebSocket} may be idle before being timed out.
-     * @return the maximum time, in milliseconds, a {@link com.ning.http.client.websocket.WebSocket} may be idle before being timed out.
+     * Return the maximum time, in milliseconds, a {@link com.ning.http.client.ws.WebSocket} may be idle before being timed out.
+     * @return the maximum time, in milliseconds, a {@link com.ning.http.client.ws.WebSocket} may be idle before being timed out.
      */
     public int getWebSocketTimeout() {
         return webSocketTimeout;
@@ -364,15 +364,6 @@ public class AsyncHttpClientConfig {
     }
 
     /**
-     * Return true if the query parameters will be stripped from the request when a redirect is requested.
-     *
-     * @return true if the query parameters will be stripped from the request when a redirect is requested.
-     */
-    public boolean isRemoveQueryParamOnRedirect() {
-        return removeQueryParamOnRedirect;
-    }
-
-    /**
      * @return <code>true</code> if both the application and reaper thread pools
      *  haven't yet been shutdown.
      *
@@ -395,6 +386,17 @@ public class AsyncHttpClientConfig {
      * @return the {@link HostnameVerifier}
      */
     public HostnameVerifier getHostnameVerifier() {
+        if (hostnameVerifier == null) {
+            synchronized (this) {
+                if (hostnameVerifier == null)
+                    hostnameVerifier = acceptAnyCertificate ? new HostnameVerifier() {
+                        @Override
+                        public boolean verify(String hostname, SSLSession session) {
+                            return true;
+                        }
+                    } : new DefaultHostnameVerifier();
+            }
+        }
         return hostnameVerifier;
     }
 
@@ -442,13 +444,6 @@ public class AsyncHttpClientConfig {
     }
 
     /**
-     * since 1.8.2
-     */
-    public TimeConverter getTimeConverter() {
-        return timeConverter;
-    }
-
-    /**
      * since 1.9.0
      */
     public boolean isAcceptAnyCertificate() {
@@ -470,6 +465,20 @@ public class AsyncHttpClientConfig {
     }
 
     /**
+     * since 1.9.13
+     */
+    public Integer getSslSessionCacheSize() {
+        return sslSessionCacheSize;
+    }
+
+    /**
+     * since 1.9.13
+     */
+    public Integer getSslSessionTimeout() {
+        return sslSessionTimeout;
+    }
+
+    /**
      * Builder for an {@link AsyncHttpClient}
      */
     public static class Builder {
@@ -488,7 +497,6 @@ public class AsyncHttpClientConfig {
         private boolean acceptAnyCertificate = defaultAcceptAnyCertificate();
         private boolean followRedirect = defaultFollowRedirect();
         private int maxRedirects = defaultMaxRedirects();
-        private boolean removeQueryParamOnRedirect = defaultRemoveQueryParamOnRedirect();
         private boolean strict302Handling = defaultStrict302Handling();
         private ProxyServerSelector proxyServerSelector = null;
         private boolean useProxySelector = defaultUseProxySelector();
@@ -498,15 +506,16 @@ public class AsyncHttpClientConfig {
         private String userAgent = defaultUserAgent();
         private ExecutorService applicationThreadPool;
         private Realm realm;
-        private final List<RequestFilter> requestFilters = new LinkedList<RequestFilter>();
-        private final List<ResponseFilter> responseFilters = new LinkedList<ResponseFilter>();
-        private final List<IOExceptionFilter> ioExceptionFilters = new LinkedList<IOExceptionFilter>();
+        private final List<RequestFilter> requestFilters = new LinkedList<>();
+        private final List<ResponseFilter> responseFilters = new LinkedList<>();
+        private final List<IOExceptionFilter> ioExceptionFilters = new LinkedList<>();
         private int maxRequestRetry = defaultMaxRequestRetry();
         private boolean disableUrlEncodingForBoundedRequests = defaultDisableUrlEncodingForBoundRequests();
         private int ioThreadMultiplier = defaultIoThreadMultiplier();
-        private String[] enabledProtocols;
+        private String[] enabledProtocols = defaultEnabledProtocols();
         private String[] enabledCipherSuites;
-        private TimeConverter timeConverter;
+        private Integer sslSessionCacheSize = defaultSslSessionCacheSize();
+        private Integer sslSessionTimeout = defaultSslSessionTimeout();
         private AsyncHttpProviderConfig<?, ?> providerConfig;
 
         public Builder() {
@@ -524,9 +533,9 @@ public class AsyncHttpClientConfig {
         }
 
         /**
-         * Set the maximum number of connections per hosts an {@link com.ning.http.client.AsyncHttpClient} can handle.
+         * Set the maximum number of connections per (scheme, host, port) an {@link com.ning.http.client.AsyncHttpClient} can handle.
          *
-         * @param maxConnectionsPerHost the maximum number of connections per host an {@link com.ning.http.client.AsyncHttpClient} can handle.
+         * @param maxConnectionsPerHost the maximum number of connections per (scheme, host, port) an {@link com.ning.http.client.AsyncHttpClient} can handle.
          * @return a {@link Builder}
          */
         public Builder setMaxConnectionsPerHost(int maxConnectionsPerHost) {
@@ -546,10 +555,10 @@ public class AsyncHttpClientConfig {
         }
 
         /**
-         * Set the maximum time in millisecond an {@link com.ning.http.client.websocket.WebSocket} can stay idle.
+         * Set the maximum time in millisecond an {@link com.ning.http.client.ws.WebSocket} can stay idle.
          *
          * @param webSocketTimeout
-         *         the maximum time in millisecond an {@link com.ning.http.client.websocket.WebSocket} can stay idle.
+         *         the maximum time in millisecond an {@link com.ning.http.client.ws.WebSocket} can stay idle.
          * @return a {@link Builder}
          */
         public Builder setWebSocketTimeout(int webSocketTimeout) {
@@ -821,17 +830,6 @@ public class AsyncHttpClientConfig {
         }
 
         /**
-         * Set to false if you don't want the query parameters removed when a redirect occurs.
-         *
-         * @param removeQueryParamOnRedirect
-         * @return this
-         */
-        public Builder setRemoveQueryParamsOnRedirect(boolean removeQueryParamOnRedirect) {
-            this.removeQueryParamOnRedirect = removeQueryParamOnRedirect;
-            return this;
-        }
-
-        /**
          * Sets whether AHC should use the default JDK ProxySelector to select a proxy server.
          * <p/>
          * If useProxySelector is set to <code>true</code> but {@link #setProxyServer(ProxyServer)}
@@ -915,11 +913,6 @@ public class AsyncHttpClientConfig {
             return this;
         }
 
-        public Builder setTimeConverter(TimeConverter timeConverter) {
-            this.timeConverter = timeConverter;
-            return this;
-        }
-
         public Builder setAcceptAnyCertificate(boolean acceptAnyCertificate) {
             this.acceptAnyCertificate = acceptAnyCertificate;
             return this;
@@ -932,6 +925,16 @@ public class AsyncHttpClientConfig {
 
         public Builder setEnabledCipherSuites(String[] enabledCipherSuites) {
             this.enabledCipherSuites = enabledCipherSuites;
+            return this;
+        }
+
+        public Builder setSslSessionCacheSize(Integer sslSessionCacheSize) {
+            this.sslSessionCacheSize = sslSessionCacheSize;
+            return this;
+        }
+
+        public Builder setSslSessionTimeout(Integer sslSessionTimeout) {
+            this.sslSessionTimeout = sslSessionTimeout;
             return this;
         }
 
@@ -971,12 +974,12 @@ public class AsyncHttpClientConfig {
             ioThreadMultiplier = prototype.getIoThreadMultiplier();
             maxRequestRetry = prototype.getMaxRequestRetry();
             allowPoolingSslConnections = prototype.isAllowPoolingConnections();
-            removeQueryParamOnRedirect = prototype.isRemoveQueryParamOnRedirect();
             hostnameVerifier = prototype.getHostnameVerifier();
             strict302Handling = prototype.isStrict302Handling();
-            timeConverter = prototype.timeConverter;
             enabledProtocols = prototype.enabledProtocols;
             enabledCipherSuites = prototype.enabledCipherSuites;
+            sslSessionCacheSize = prototype.sslSessionCacheSize;
+            sslSessionTimeout = prototype.sslSessionTimeout;
             acceptAnyCertificate = prototype.acceptAnyCertificate;
         }
 
@@ -1007,8 +1010,6 @@ public class AsyncHttpClientConfig {
 
             if (acceptAnyCertificate)
                 hostnameVerifier = null;
-            else if (hostnameVerifier == null)
-                hostnameVerifier = new DefaultHostnameVerifier();
 
             return new AsyncHttpClientConfig(connectTimeout,//
                     maxConnections,//
@@ -1025,7 +1026,6 @@ public class AsyncHttpClientConfig {
                     acceptAnyCertificate, //
                     followRedirect, //
                     maxRedirects, //
-                    removeQueryParamOnRedirect,//
                     strict302Handling, //
                     applicationThreadPool, //
                     proxyServerSelector, //
@@ -1039,9 +1039,10 @@ public class AsyncHttpClientConfig {
                     maxRequestRetry, //
                     disableUrlEncodingForBoundedRequests, //
                     ioThreadMultiplier, //
-                    timeConverter,//
                     enabledProtocols, //
                     enabledCipherSuites, //
+                    sslSessionCacheSize, //
+                    sslSessionTimeout, //
                     providerConfig);
         }
     }

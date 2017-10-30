@@ -13,10 +13,13 @@
  */
 package com.ning.http.client;
 
+import static com.ning.http.util.MiscUtils.isNonEmpty;
+
 import com.ning.http.util.SslUtils;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
 
 import java.security.GeneralSecurityException;
 
@@ -43,18 +46,20 @@ public interface SSLEngineFactory {
 
         @Override
         public SSLEngine newSSLEngine(String peerHost, int peerPort) throws GeneralSecurityException {
-            SSLContext sslContext = config.getSSLContext();
-
-            if (sslContext == null)
-                sslContext = SslUtils.getInstance().getSSLContext(config.isAcceptAnyCertificate());
-
+            SSLContext sslContext = SslUtils.getInstance().getSSLContext(config);
+            
             SSLEngine sslEngine = sslContext.createSSLEngine(peerHost, peerPort);
             sslEngine.setUseClientMode(true);
+            if (!config.isAcceptAnyCertificate()) {
+                SSLParameters params = sslEngine.getSSLParameters();
+                params.setEndpointIdentificationAlgorithm("HTTPS");
+                sslEngine.setSSLParameters(params);
+            }
 
-            if (config.getEnabledProtocols() != null)
+            if (isNonEmpty(config.getEnabledProtocols()))
                 sslEngine.setEnabledProtocols(config.getEnabledProtocols());
 
-            if (config.getEnabledCipherSuites() != null)
+            if (isNonEmpty(config.getEnabledCipherSuites()))
                 sslEngine.setEnabledCipherSuites(config.getEnabledCipherSuites());
 
             return sslEngine;

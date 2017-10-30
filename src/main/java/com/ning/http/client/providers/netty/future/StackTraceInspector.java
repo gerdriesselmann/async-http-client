@@ -12,6 +12,9 @@
  */
 package com.ning.http.client.providers.netty.future;
 
+import java.io.IOException;
+import java.nio.channels.ClosedChannelException;
+
 public class StackTraceInspector {
 
     private static boolean exceptionInMethod(Throwable t, String className, String methodName) {
@@ -25,17 +28,21 @@ public class StackTraceInspector {
         return false;
     }
 
-    private static boolean abortOnConnectCloseException(Throwable t) {
+    private static boolean recoverOnConnectCloseException(Throwable t) {
         return exceptionInMethod(t, "sun.nio.ch.SocketChannelImpl", "checkConnect")
-                || (t.getCause() != null && abortOnConnectCloseException(t.getCause()));
+                || (t.getCause() != null && recoverOnConnectCloseException(t.getCause()));
     }
 
-    public static boolean abortOnDisconnectException(Throwable t) {
-        return exceptionInMethod(t, "org.jboss.netty.handler.ssl.SslHandler", "channelDisconnected")
-                || (t.getCause() != null && abortOnConnectCloseException(t.getCause()));
+    public static boolean recoverOnDisconnectException(Throwable t) {
+        return t instanceof ClosedChannelException ||
+                exceptionInMethod(t, "org.jboss.netty.handler.ssl.SslHandler", "channelDisconnected")
+                || (t.getCause() != null && recoverOnConnectCloseException(t.getCause()));
     }
 
-    public static boolean abortOnReadOrWriteException(Throwable t) {
+    public static boolean recoverOnReadOrWriteException(Throwable t) {
+
+        if (t instanceof IOException && "Connection reset by peer".equalsIgnoreCase(t.getMessage()))
+            return true;
 
         try {
             for (StackTraceElement element : t.getStackTrace()) {
@@ -48,7 +55,7 @@ public class StackTraceInspector {
         }
 
         if (t.getCause() != null)
-            return abortOnReadOrWriteException(t.getCause());
+            return recoverOnReadOrWriteException(t.getCause());
 
         return false;
     }

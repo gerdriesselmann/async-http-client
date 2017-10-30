@@ -21,13 +21,14 @@ import com.ning.http.client.HttpResponseHeaders;
 import com.ning.http.client.HttpResponseStatus;
 import com.ning.http.client.Response;
 
+import java.net.InetAddress;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class EventCollectingHandler extends AsyncCompletionHandlerBase implements AsyncHandlerExtensions {
-    public Queue<String> firedEvents = new ConcurrentLinkedQueue<String>();
+    public Queue<String> firedEvents = new ConcurrentLinkedQueue<>();
     private CountDownLatch completionLatch = new CountDownLatch(1);
 
     public void waitForCompletion() throws InterruptedException {
@@ -101,7 +102,7 @@ public class EventCollectingHandler extends AsyncCompletionHandlerBase implement
     }
 
     @Override
-    public void onDnsResolved() {
+    public void onDnsResolved(InetAddress address) {
         firedEvents.add("DnsResolved");
     }
 

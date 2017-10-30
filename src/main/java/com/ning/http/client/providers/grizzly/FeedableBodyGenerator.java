@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2012-2016 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -14,7 +14,6 @@ package com.ning.http.client.providers.grizzly;
 
 import com.ning.http.client.Body;
 import com.ning.http.client.BodyGenerator;
-import com.ning.http.client.providers.grizzly.GrizzlyAsyncHttpProvider.HttpTransactionContext;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -38,6 +37,7 @@ import org.glassfish.grizzly.utils.Futures;
 import static java.lang.Boolean.TRUE;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.glassfish.grizzly.ssl.SSLUtils.getSSLEngine;
+import org.glassfish.grizzly.utils.Exceptions;
 import static org.glassfish.grizzly.utils.Exceptions.*;
 
 /**
@@ -167,34 +167,37 @@ public class FeedableBodyGenerator implements BodyGenerator {
         }
         this.context = context;
         asyncTransferInitiated = true;
-        final Runnable r = new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (requestPacket.isSecure() &&
-                            (getSSLEngine(context.getConnection()) == null)) {
-                        flushOnSSLHandshakeComplete();
-                    } else {
-                        feeder.flush();
-                    }
-                } catch (IOException ioe) {
-                    HttpTransactionContext.get(c).abort(ioe);
-                }
-            }
-        };
-
-        // If the current thread is a selector thread, we need to execute
-        // the remainder of the task on the worker thread to prevent
-        // it from being blocked.
-        if (isServiceThread()) {
-            c.getTransport().getWorkerThreadPool().execute(r);
+        
+        if (requestPacket.isSecure() &&
+                (getSSLEngine(context.getConnection()) == null)) {
+            flushOnSSLHandshakeComplete();
         } else {
-            r.run();
+            feederFlush(context.getConnection());
         }
     }
 
-
     // --------------------------------------------------------- Private Methods
+
+    private void feederFlush(final Connection c) {
+        if (isServiceThread()) {
+            c.getTransport().getWorkerThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    feederFlush0(c);
+                }
+            });
+        } else {
+            feederFlush0(c);
+        }
+    }
+
+    private void feederFlush0(final Connection c) {
+        try {
+            feeder.flush();
+        } catch (IOException ioe) {
+            c.closeWithReason(ioe);
+        }
+    }
 
 
     private boolean isServiceThread() {
@@ -212,14 +215,15 @@ public class FeedableBodyGenerator implements BodyGenerator {
             public void onStart(Connection connection) {
             }
 
+            @Override
+            public void onFailure(final Connection connection, final Throwable t) {
+                connection.closeWithReason(Exceptions.makeIOException(t));
+            }
+            
             public void onComplete(Connection connection) {
                 if (c.equals(connection)) {
                     filter.removeHandshakeListener(this);
-                    try {
-                        feeder.flush();
-                    } catch (IOException ioe) {
-                        HttpTransactionContext.get(c).abort(ioe);
-                    }
+                    feederFlush(c);
                 }
             }
         });
@@ -302,10 +306,10 @@ public class FeedableBodyGenerator implements BodyGenerator {
      * an implementation for the contract defined by the {@link #feed} method.
      */
     public static abstract class BaseFeeder implements Feeder {
-
+        
         protected final FeedableBodyGenerator feedableBodyGenerator;
-
-
+        
+        private boolean wasLastSent;
         // -------------------------------------------------------- Constructors
 
 
@@ -325,15 +329,35 @@ public class FeedableBodyGenerator implements BodyGenerator {
                 throw new IllegalArgumentException(
                         "Buffer argument cannot be null.");
             }
+            
             if (!feedableBodyGenerator.asyncTransferInitiated) {
                 throw new IllegalStateException("Asynchronous transfer has not been initiated.");
             }
+            
+            if (wasLastSent) {
+                if (buffer.hasRemaining()) {
+                    throw new IOException("Last chunk was alredy written");
+                }
+                
+                return;
+            }
+            
             blockUntilQueueFree(feedableBodyGenerator.context.getConnection());
             final HttpContent content =
                     feedableBodyGenerator.contentBuilder.content(buffer).last(last).build();
             final CompletionHandler<WriteResult> handler =
                     ((last) ? new LastPacketCompletionHandler() : null);
             feedableBodyGenerator.context.write(content, handler);
+            
+            if (last) {
+                wasLastSent = true;
+                final HttpTransactionContext currentTransaction =
+                        HttpTransactionContext.currentTransaction(
+                                feedableBodyGenerator.requestPacket);
+                if (currentTransaction != null) {
+                    currentTransaction.onRequestFullySent();
+                }
+            }
         }
 
         /**
@@ -375,9 +399,9 @@ public class FeedableBodyGenerator implements BodyGenerator {
                     future.get();
                 }
             } catch (ExecutionException e) {
-                HttpTransactionContext.get(c).abort(e.getCause());
+                c.closeWithReason(Exceptions.makeIOException(e.getCause()));
             } catch (Exception e) {
-                HttpTransactionContext.get(c).abort(e);
+                c.closeWithReason(Exceptions.makeIOException(e));
             }
         }
 
@@ -583,7 +607,7 @@ public class FeedableBodyGenerator implements BodyGenerator {
             @Override
             public void onError(Throwable t) {
                 c.setMaxAsyncWriteQueueSize(feedableBodyGenerator.origMaxPendingBytes);
-                HttpTransactionContext.get(c).abort(t);
+                c.closeWithReason(Exceptions.makeIOException(t));
             }
 
         } // END WriteHandlerImpl
@@ -603,7 +627,7 @@ public class FeedableBodyGenerator implements BodyGenerator {
                 } catch (IOException e) {
                     final Connection c = feedableBodyGenerator.context.getConnection();
                     c.setMaxAsyncWriteQueueSize(feedableBodyGenerator.origMaxPendingBytes);
-                    HttpTransactionContext.get(c).abort(e);
+                    c.closeWithReason(Exceptions.makeIOException(e));
                 }
             }
 

@@ -13,6 +13,7 @@
 
 package com.ning.http.client.async.grizzly;
 
+import org.testng.annotations.Test;
 
 import com.ning.http.client.AsyncHttpClient;
 import com.ning.http.client.AsyncHttpClientConfig;
@@ -24,5 +25,15 @@ public class GrizzlyBasicHttpsTest extends BasicHttpsTest {
     @Override
     public AsyncHttpClient getAsyncHttpClient(AsyncHttpClientConfig config) {
         return ProviderUtil.grizzlyProvider(config);
+    }
+
+    @Test(enabled = false)
+    @Override
+    public void failInstantlyIfNotAllowedSelfSignedCertificate() throws Exception {
+    }
+
+    @Test(enabled = false)
+    @Override
+    public void reconnectsAfterFailedCertificationPath() throws Exception {
     }
 }

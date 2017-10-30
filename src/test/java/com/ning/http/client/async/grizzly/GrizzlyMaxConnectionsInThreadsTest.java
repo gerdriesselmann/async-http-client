@@ -24,5 +24,4 @@ public class GrizzlyMaxConnectionsInThreadsTest extends MaxConnectionsInThreads 
     public AsyncHttpClient getAsyncHttpClient(AsyncHttpClientConfig config) {
         return ProviderUtil.grizzlyProvider(config);
     }
-
 }
