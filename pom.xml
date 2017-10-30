@@ -533,13 +533,8 @@
         <additionalparam>-Xdoclint:none</additionalparam>
         <distMgmtSnapshotsUrl>http://oss.sonatype.org/content/repositories/snapshots</distMgmtSnapshotsUrl>
         <surefire.redirectTestOutputToFile>true</surefire.redirectTestOutputToFile>
-<<<<<<< HEAD
-        <netty.version>3.10.6.Final-LOCAL</netty.version>
+        <netty.version>3.10.7.Final-LOCAL</netty.version>
         <grizzly.version>2.3.21</grizzly.version>
-=======
-        <netty.version>3.10.6.Final</netty.version>
-        <grizzly.version>2.3.26</grizzly.version>
->>>>>>> upstream/1.9.x
         <maven.compiler.source>1.7</maven.compiler.source>
         <maven.compiler.target>1.7</maven.compiler.target>
         <surefire.version>2.12</surefire.version>
