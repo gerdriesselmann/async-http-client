@@ -77,7 +77,7 @@ public class MultipartBody implements RandomAccessBody {
     public long transferTo(long position, WritableByteChannel target) throws IOException {
 
         if (transfertDone) {
-            return -1;
+            throw new UnsupportedOperationException("Transfer is already done");
         }
 
         long overallLength = 0;
@@ -183,7 +183,7 @@ public class MultipartBody implements RandomAccessBody {
     }
 
     private boolean currentBytesFullyRead() {
-        return currentBytes == null || currentBytesPosition >= currentBytes.length - 1;
+        return currentBytes == null || currentBytesPosition == -1;
     }
 
     private void initializeFileBody(AbstractFilePart part) throws IOException {
@@ -224,6 +224,12 @@ public class MultipartBody implements RandomAccessBody {
     }
 
     private int writeCurrentBytes(ByteBuffer buffer, int length) throws IOException {
+
+        if (currentBytes.length == 0) {
+            currentBytesPosition = -1;
+            currentBytes = null;
+            return 0;
+        }
 
         int available = currentBytes.length - currentBytesPosition;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 Sonatype, Inc. All rights reserved.
+ * Copyright (c) 2012-2016 Sonatype, Inc. All rights reserved.
  *
  * This program is licensed to you under the Apache License Version 2.0,
  * and you may not use this file except in compliance with the Apache License Version 2.0.
@@ -24,6 +24,7 @@ import java.io.IOException;
 import org.glassfish.grizzly.CloseListener;
 import org.glassfish.grizzly.CloseType;
 import org.glassfish.grizzly.Closeable;
+import org.glassfish.grizzly.CompletionHandler;
 import org.glassfish.grizzly.Connection;
 import org.glassfish.grizzly.Grizzly;
 import org.glassfish.grizzly.attributes.Attribute;
@@ -80,6 +81,11 @@ public final class HttpTransactionContext {
     // the pool
     boolean isReuseConnection;
 
+    /**
+     * <tt>true</tt> if the request is fully sent, or <tt>false</tt>otherwise.
+     */
+    private boolean isRequestFullySent;
+    private CleanupTask cleanupTask;
     
     private final CloseListener listener = new CloseListener<Closeable, CloseType>() {
         @Override
@@ -98,7 +104,8 @@ public final class HttpTransactionContext {
                 try {
                     closeable.assertOpen();
                 } catch (IOException ioe) {
-                    abort(ioe);
+                    // unwrap the exception as it was wrapped by assertOpen.
+                    abort(ioe.getCause());
                 }
             }
         }
@@ -111,14 +118,13 @@ public final class HttpTransactionContext {
         REQUEST_STATE_ATTR.set(httpCtx, httpTxContext);
     }
 
-    static HttpTransactionContext cleanupTransaction(final HttpContext httpCtx) {
+    static void cleanupTransaction(final HttpContext httpCtx,
+            final CompletionHandler<HttpTransactionContext> completionHandler) {
         final HttpTransactionContext httpTxContext = currentTransaction(httpCtx);
-        if (httpTxContext != null) {
-            httpCtx.getCloseable().removeCloseListener(httpTxContext.listener);
-            REQUEST_STATE_ATTR.remove(httpCtx);
-        }
         
-        return httpTxContext;
+        assert httpTxContext != null;
+        
+        httpTxContext.scheduleCleanup(httpCtx, completionHandler);
     }
 
     static HttpTransactionContext currentTransaction(
@@ -161,7 +167,7 @@ public final class HttpTransactionContext {
         return connection;
     }
     
-    AsyncHandler getAsyncHandler() {
+    public AsyncHandler getAsyncHandler() {
         return future.getAsyncHandler();
     }
     
@@ -171,7 +177,7 @@ public final class HttpTransactionContext {
 
     ProxyServer getProxyServer() {
         return proxyServer;
-    }    
+    }
     
     // ----------------------------------------------------- Private Methods
 
@@ -245,5 +251,58 @@ public final class HttpTransactionContext {
 
     void closeConnection() {
         connection.closeSilently();
+    }
+
+    private void scheduleCleanup(final HttpContext httpCtx,
+            final CompletionHandler<HttpTransactionContext> completionHandler) {
+        synchronized (this) {
+            if (!isRequestFullySent) {
+                assert cleanupTask == null; // scheduleCleanup should be called only once
+                cleanupTask = new CleanupTask(httpCtx, completionHandler);
+                return;
+            }
+        }
+
+        assert isRequestFullySent;
+        cleanup(httpCtx);
+        completionHandler.completed(this);
+    }
+    
+    private void cleanup(final HttpContext httpCtx) {
+        httpCtx.getCloseable().removeCloseListener(listener);
+        REQUEST_STATE_ATTR.remove(httpCtx);
+    }
+    
+    @SuppressWarnings("unchecked")
+    void onRequestFullySent() {
+        synchronized (this) {
+            if (isRequestFullySent) {
+                return;
+            }
+            
+            isRequestFullySent = true;
+        }
+        
+        if (cleanupTask != null) {
+            cleanupTask.run();
+        }
+    }
+    
+    private class CleanupTask implements Runnable {
+        private final HttpContext httpCtx;
+        private final CompletionHandler<HttpTransactionContext> completionHandler;
+        
+        private CleanupTask(final HttpContext httpCtx,
+                final CompletionHandler<HttpTransactionContext> completionHandler) {
+            this.httpCtx = httpCtx;
+            this.completionHandler = completionHandler;
+        }
+
+        @Override
+        public void run() {
+            cleanup(httpCtx);
+            completionHandler.completed(HttpTransactionContext.this);
+        }
+        
     }
 } // END HttpTransactionContext

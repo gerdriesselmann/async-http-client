@@ -32,6 +32,7 @@ import org.glassfish.grizzly.ConnectorHandler;
 import org.glassfish.grizzly.Grizzly;
 import org.glassfish.grizzly.GrizzlyFuture;
 import org.glassfish.grizzly.attributes.Attribute;
+import org.glassfish.grizzly.connectionpool.ConnectionInfo;
 import org.glassfish.grizzly.connectionpool.Endpoint;
 import org.glassfish.grizzly.connectionpool.MultiEndpointPool;
 import org.glassfish.grizzly.connectionpool.SingleEndpointPool;
@@ -128,12 +129,12 @@ class ConnectionManager {
             port = getPort(scheme, uri.getPort());
         }
         
-        final String partitionId = getPartitionId(request, proxy);
+        final String partitionId = getPartitionId(request.getInetAddress(), request, proxy);
         Endpoint endpoint = endpointMap.get(partitionId);
         if (endpoint == null) {
             final boolean isSecure = Utils.isSecure(scheme);
             endpoint = new AhcEndpoint(partitionId,
-                    isSecure, host, port, request.getLocalAddress(),
+                    isSecure, request.getInetAddress(), host, port, request.getLocalAddress(),
                     defaultConnectionHandler);
 
             endpointMap.put(partitionId, endpoint);
@@ -163,11 +164,11 @@ class ConnectionManager {
         
         final boolean isSecure = Utils.isSecure(scheme);
         
-        final String partitionId = getPartitionId(request, proxy);
+        final String partitionId = getPartitionId(request.getInetAddress(), request, proxy);
         Endpoint endpoint = endpointMap.get(partitionId);
         if (endpoint == null) {
             endpoint = new AhcEndpoint(partitionId,
-                    isSecure, host, port, request.getLocalAddress(),
+                    isSecure, request.getInetAddress(), host, port, request.getLocalAddress(),
                     defaultConnectionHandler);
 
             endpointMap.put(partitionId, endpoint);
@@ -209,14 +210,20 @@ class ConnectionManager {
         pool.close();
     }
 
+    boolean isReadyInPool(final Connection c) {
+        final ConnectionInfo<SocketAddress> ci = pool.getConnectionInfo(c);
+        return ci != null && ci.isReady();
+    }
+    
     static boolean isKeepAlive(final Connection connection) {
         return !IS_NOT_KEEP_ALIVE.isSet(connection);
     }
     
-    private static String getPartitionId(Request request,
+    private static String getPartitionId(InetAddress overrideAddress, Request request,
             ProxyServer proxyServer) {
-        return request.getConnectionPoolPartitioning()
-                .getPartitionKey(request.getUri(), proxyServer).toString();
+        return (overrideAddress != null ? overrideAddress.toString() + "_" : "") + 
+            request.getConnectionPoolPartitioning()
+             .getPartitionKey(request.getUri(), proxyServer).toString();
     }
 
     private static int getPort(final String scheme, final int p) {
@@ -238,6 +245,7 @@ class ConnectionManager {
 
         private final String partitionId;
         private final boolean isSecure;
+        private final InetAddress remoteOverrideAddress;
         private final String host;
         private final int port;
         private final InetAddress localAddress;
@@ -245,12 +253,13 @@ class ConnectionManager {
         
         private AhcEndpoint(final String partitionId,
                 final boolean isSecure,
-                final String host, final int port,
+                final InetAddress remoteOverrideAddress, final String host, final int port,
                 final InetAddress localAddress,
                 final ConnectorHandler<SocketAddress> connectorHandler) {
             
             this.partitionId = partitionId;
             this.isSecure = isSecure;
+            this.remoteOverrideAddress = remoteOverrideAddress;
             this.host = host;
             this.port = port;
             this.localAddress = localAddress;
@@ -269,10 +278,17 @@ class ConnectionManager {
         @Override
         public GrizzlyFuture<Connection> connect() {
             return (GrizzlyFuture<Connection>) connectorHandler.connect(
-                    new InetSocketAddress(host, port),
+                    buildRemoteSocketAddress(),
                     localAddress != null
                             ? new InetSocketAddress(localAddress, 0)
                             : null);
+        }
+
+        private InetSocketAddress buildRemoteSocketAddress()
+        {
+            return remoteOverrideAddress != null
+                    ? new InetSocketAddress(remoteOverrideAddress, port)
+                    : new InetSocketAddress(host, port);
         }
 
         @Override
